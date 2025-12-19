@@ -47,6 +47,10 @@ const io = new Server(httpServer, {
 // Setup socket event handlers
 setupSocketHandlers(io, roomManager);
 
+app.get('/', (req, res) => {
+  res.send('Watch Together - Signaling Server');
+});
+
 // Start server
 httpServer.listen(PORT, () => {
   logger.info('╔═══════════════════════════════════════════════════════╗');

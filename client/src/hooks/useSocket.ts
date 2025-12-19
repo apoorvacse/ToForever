@@ -3,7 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { useRoomStore } from '@/store/roomStore';
 import { logger } from '@/lib/logger';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'https://toforever.onrender.com';
 
 interface UseSocketOptions {
   roomId: string | null;
