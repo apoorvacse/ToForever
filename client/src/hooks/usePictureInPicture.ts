@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, RefObject } from 'react';
+import { logger } from '@/lib/logger';
 
 interface UsePictureInPictureOptions {
   videoRef: RefObject<HTMLVideoElement>;
@@ -64,13 +65,13 @@ export const usePictureInPicture = ({
     const videoElement = videoRef.current;
     
     if (!videoElement || !isPipSupported) {
-      console.warn('PiP not supported or video element not available');
+      logger.warn('PiP not supported or video element not available');
       return;
     }
 
     // Check if video has valid source
     if (!videoElement.srcObject && !videoElement.src) {
-      console.warn('Video has no source, cannot enter PiP');
+      logger.warn('Video has no source, cannot enter PiP');
       return;
     }
 
@@ -82,7 +83,7 @@ export const usePictureInPicture = ({
       
       await videoElement.requestPictureInPicture();
     } catch (error) {
-      console.error('Failed to enter PiP:', error);
+      logger.error('Failed to enter PiP:', error);
     }
   }, [videoRef, isPipSupported]);
 
@@ -95,7 +96,7 @@ export const usePictureInPicture = ({
         await document.exitPictureInPicture();
       }
     } catch (error) {
-      console.error('Failed to exit PiP:', error);
+      logger.error('Failed to exit PiP:', error);
     }
   }, [isPipSupported]);
 

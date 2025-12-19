@@ -25,6 +25,7 @@ interface ControlBarProps {
   isMicOn: boolean;
   isScreenSharing: boolean;
   isRemoteAudioMuted: boolean;
+  isHost?: boolean; // BUG FIX: Add isHost prop to control screen share button
   onToggleCamera: () => void;
   onToggleMic: () => void;
   onToggleScreenShare: () => void;
@@ -40,6 +41,7 @@ export const ControlBar = ({
   isMicOn,
   isScreenSharing,
   isRemoteAudioMuted,
+  isHost = false,
   onToggleCamera,
   onToggleMic,
   onToggleScreenShare,
@@ -91,16 +93,24 @@ export const ControlBar = ({
         {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
       </Button>
 
-      {/* Screen share toggle */}
+      {/* Screen share toggle - only enabled for host */}
       <Button
         variant={isScreenSharing ? 'default' : 'secondary'}
         size="lg"
         onClick={onToggleScreenShare}
+        disabled={!isHost && !isScreenSharing} // BUG FIX: Disable if not host (unless already sharing)
         className={cn(
           'px-5 h-12 rounded-full gap-2',
-          isScreenSharing && 'glow-primary animate-pulse-glow'
+          isScreenSharing && 'glow-primary animate-pulse-glow',
+          !isHost && !isScreenSharing && 'opacity-50 cursor-not-allowed'
         )}
-        title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
+        title={
+          !isHost && !isScreenSharing
+            ? 'Only host can share screen'
+            : isScreenSharing
+            ? 'Stop sharing'
+            : 'Share screen'
+        }
       >
         {isScreenSharing ? (
           <>

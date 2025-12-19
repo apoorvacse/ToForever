@@ -30,14 +30,27 @@ const Home = () => {
 
   const handleJoinRoom = () => {
     const targetId = generatedRoomId || roomId.trim().toUpperCase();
-    if (targetId.length < 4) {
+    
+    // Input validation: Room ID must be 4-20 alphanumeric characters
+    if (!targetId || targetId.length < 4 || targetId.length > 20) {
       toast({
         title: 'Invalid Room ID',
-        description: 'Please enter a valid room ID to join.',
+        description: 'Room ID must be between 4 and 20 characters.',
         variant: 'destructive',
       });
       return;
     }
+    
+    // Validate alphanumeric only
+    if (!/^[A-Z0-9]+$/i.test(targetId)) {
+      toast({
+        title: 'Invalid Room ID',
+        description: 'Room ID can only contain letters and numbers.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     navigate(`/room/${targetId}`);
   };
 
@@ -152,9 +165,18 @@ const Home = () => {
               <Input
                 placeholder="Enter room ID..."
                 value={roomId}
-                onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+                onChange={(e) => {
+                  // Only allow alphanumeric characters
+                  const value = e.target.value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+                  setRoomId(value.substring(0, 20)); // Max 20 characters
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && roomId.trim().length >= 4) {
+                    handleJoinRoom();
+                  }
+                }}
                 className="h-12 text-center text-lg font-mono tracking-widest uppercase"
-                maxLength={8}
+                maxLength={20}
               />
               <Button
                 onClick={handleJoinRoom}

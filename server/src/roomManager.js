@@ -4,6 +4,8 @@
  * Each room supports maximum 2 users
  */
 
+import { logger } from './logger.js';
+
 class RoomManager {
   constructor() {
     // Map<roomId, Room>
@@ -28,7 +30,7 @@ class RoomManager {
     };
 
     this.rooms.set(roomId, room);
-    console.log(`[RoomManager] Room created: ${roomId}`);
+    logger.log(`[RoomManager] Room created: ${roomId}`);
     return room;
   }
 
@@ -80,7 +82,7 @@ class RoomManager {
       room.hostId = socketId;
     }
 
-    console.log(`[RoomManager] User ${user.userId} joined room ${roomId} (${room.users.size}/2)`);
+    logger.log(`[RoomManager] User ${user.userId} joined room ${roomId} (${room.users.size}/2)`);
     
     return {
       success: true,
@@ -123,9 +125,9 @@ class RoomManager {
     // Clean up empty rooms
     if (room.users.size === 0) {
       this.rooms.delete(roomId);
-      console.log(`[RoomManager] Room deleted: ${roomId}`);
+      logger.log(`[RoomManager] Room deleted: ${roomId}`);
     } else {
-      console.log(`[RoomManager] User ${user.userId} left room ${roomId} (${room.users.size}/2)`);
+      logger.log(`[RoomManager] User ${user.userId} left room ${roomId} (${room.users.size}/2)`);
     }
 
     return {
@@ -169,7 +171,7 @@ class RoomManager {
     const oldHostId = room.hostId;
     room.hostId = socketId;
 
-    console.log(`[RoomManager] Host changed in room ${roomId}: ${oldHostId} -> ${socketId}`);
+    logger.log(`[RoomManager] Host changed in room ${roomId}: ${oldHostId} -> ${socketId}`);
     return true;
   }
 
@@ -203,7 +205,7 @@ class RoomManager {
     for (const [roomId, room] of this.rooms.entries()) {
       if (room.users.size === 0 && (now - room.createdAt) > oneHour) {
         this.rooms.delete(roomId);
-        console.log(`[RoomManager] Cleaned up stale room: ${roomId}`);
+        logger.log(`[RoomManager] Cleaned up stale room: ${roomId}`);
       }
     }
   }

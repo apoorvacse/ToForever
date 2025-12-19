@@ -11,13 +11,37 @@ interface ScreenPlayerProps {
 export const ScreenPlayer = ({ stream, hostName, className }: ScreenPlayerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  /**
+   * Effect to attach screen share stream to video element
+   * 
+   * BUG FIX: Ensure video element properly displays screen share stream
+   */
   useEffect(() => {
-    if (videoRef.current) {
-      if (stream) {
-        videoRef.current.srcObject = stream;
+    const videoElement = videoRef.current;
+    if (!videoElement) return;
+
+    if (stream) {
+      // Check if stream has active video tracks
+      const videoTracks = stream.getVideoTracks();
+      const hasActiveVideo = videoTracks.length > 0 && videoTracks[0].readyState === 'live';
+      
+      if (hasActiveVideo) {
+        // Only set srcObject if it's different to avoid unnecessary reloads
+        if (videoElement.srcObject !== stream) {
+          videoElement.srcObject = stream;
+        }
+        
+        // Ensure video plays
+        videoElement.play().catch((error) => {
+          console.warn('Screen share video autoplay prevented:', error);
+        });
       } else {
-        videoRef.current.srcObject = null;
+        // Stream exists but no active video track
+        videoElement.srcObject = null;
       }
+    } else {
+      // No stream - clear video element
+      videoElement.srcObject = null;
     }
   }, [stream]);
 

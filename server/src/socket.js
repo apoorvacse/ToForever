@@ -3,9 +3,29 @@
  * Handles all WebRTC signaling events
  */
 
+import { logger } from './logger.js';
+
+// Input validation helpers
+function validateRoomId(roomId) {
+  if (!roomId || typeof roomId !== 'string') return false;
+  // Room ID should be alphanumeric, 4-20 characters
+  return /^[A-Z0-9]{4,20}$/i.test(roomId.trim());
+}
+
+function validateUserId(userId) {
+  if (!userId || typeof userId !== 'string') return false;
+  // User ID should be alphanumeric, 3-50 characters
+  return /^[a-zA-Z0-9]{3,50}$/.test(userId.trim());
+}
+
+function sanitizeString(str, maxLength = 100) {
+  if (typeof str !== 'string') return '';
+  return str.trim().substring(0, maxLength).replace(/[<>]/g, '');
+}
+
 export function setupSocketHandlers(io, roomManager) {
   io.on('connection', (socket) => {
-    console.log(`[Socket] Client connected: ${socket.id}`);
+    logger.log(`[Socket] Client connected: ${socket.id}`);
 
     // Track which room this socket is in
     let currentRoomId = null;
@@ -17,10 +37,19 @@ export function setupSocketHandlers(io, roomManager) {
      */
     socket.on('join-room', ({ roomId, userId, name }) => {
       try {
-        if (!roomId || !userId) {
-          socket.emit('error', { message: 'Missing roomId or userId' });
+        // Input validation
+        if (!validateRoomId(roomId)) {
+          socket.emit('error', { message: 'Invalid roomId format' });
           return;
         }
+        
+        if (!validateUserId(userId)) {
+          socket.emit('error', { message: 'Invalid userId format' });
+          return;
+        }
+
+        // Sanitize name if provided
+        const sanitizedName = name ? sanitizeString(name, 50) : undefined;
 
         // Leave previous room if any
         if (currentRoomId && currentRoomId !== roomId) {
@@ -33,29 +62,32 @@ export function setupSocketHandlers(io, roomManager) {
         }
 
         // Add user to room
-        const result = roomManager.addUser(roomId, socket.id, { userId, name });
+        const result = roomManager.addUser(roomId.trim().toUpperCase(), socket.id, { 
+          userId: userId.trim(), 
+          name: sanitizedName 
+        });
 
         if (!result.success) {
           socket.emit('error', { message: result.error });
           return;
         }
 
-        currentRoomId = roomId;
-        socket.join(roomId);
+        currentRoomId = roomId.trim().toUpperCase();
+        socket.join(currentRoomId);
 
-        const otherUsers = roomManager.getOtherUsers(roomId, socket.id);
+        const otherUsers = roomManager.getOtherUsers(currentRoomId, socket.id);
         
         // Notify client they joined successfully
         socket.emit('room-joined', {
-          roomId,
-          userId,
+          roomId: currentRoomId,
+          userId: result.user.userId,
           isHost: result.isHost,
           otherUsers: otherUsers.map(u => ({ userId: u.userId, name: u.name })),
         });
 
         // Notify other users that a peer joined
         if (otherUsers.length > 0) {
-          socket.to(roomId).emit('peer-joined', {
+          socket.to(currentRoomId).emit('peer-joined', {
             userId: result.user.userId,
             name: result.user.name,
             socketId: socket.id,
@@ -70,9 +102,9 @@ export function setupSocketHandlers(io, roomManager) {
           });
         }
 
-        console.log(`[Socket] ${socket.id} joined room ${roomId} as ${userId}`);
+        logger.log(`[Socket] ${socket.id} joined room ${currentRoomId} as ${result.user.userId}`);
       } catch (error) {
-        console.error(`[Socket] Error in join-room:`, error);
+        logger.error(`[Socket] Error in join-room:`, error);
         socket.emit('error', { message: 'Failed to join room' });
       }
     });
@@ -84,14 +116,27 @@ export function setupSocketHandlers(io, roomManager) {
      */
     socket.on('offer', ({ offer, roomId, targetSocketId }) => {
       try {
-        if (!offer || !roomId) {
-          socket.emit('error', { message: 'Missing offer or roomId' });
+        // Input validation
+        if (!offer || typeof offer !== 'object' || !offer.type || !offer.sdp) {
+          socket.emit('error', { message: 'Invalid offer format' });
+          return;
+        }
+        
+        if (!validateRoomId(roomId)) {
+          socket.emit('error', { message: 'Invalid roomId format' });
           return;
         }
 
-        const room = roomManager.getRoom(roomId);
+        const normalizedRoomId = roomId.trim().toUpperCase();
+        const room = roomManager.getRoom(normalizedRoomId);
         if (!room || !room.users.has(socket.id)) {
           socket.emit('error', { message: 'Not in room' });
+          return;
+        }
+
+        // Validate targetSocketId if provided
+        if (targetSocketId && typeof targetSocketId !== 'string') {
+          socket.emit('error', { message: 'Invalid targetSocketId' });
           return;
         }
 
@@ -104,16 +149,16 @@ export function setupSocketHandlers(io, roomManager) {
             fromUserId: room.users.get(socket.id)?.userId,
           });
         } else {
-          socket.to(roomId).emit('offer', {
+          socket.to(normalizedRoomId).emit('offer', {
             offer,
             fromSocketId: socket.id,
             fromUserId: room.users.get(socket.id)?.userId,
           });
         }
 
-        console.log(`[Socket] Offer relayed from ${socket.id} in room ${roomId}`);
+        logger.log(`[Socket] Offer relayed from ${socket.id} in room ${normalizedRoomId}`);
       } catch (error) {
-        console.error(`[Socket] Error in offer:`, error);
+        logger.error(`[Socket] Error in offer:`, error);
         socket.emit('error', { message: 'Failed to relay offer' });
       }
     });
@@ -125,12 +170,24 @@ export function setupSocketHandlers(io, roomManager) {
      */
     socket.on('answer', ({ answer, roomId, targetSocketId }) => {
       try {
-        if (!answer || !roomId || !targetSocketId) {
-          socket.emit('error', { message: 'Missing answer, roomId, or targetSocketId' });
+        // Input validation
+        if (!answer || typeof answer !== 'object' || !answer.type || !answer.sdp) {
+          socket.emit('error', { message: 'Invalid answer format' });
+          return;
+        }
+        
+        if (!validateRoomId(roomId)) {
+          socket.emit('error', { message: 'Invalid roomId format' });
+          return;
+        }
+        
+        if (!targetSocketId || typeof targetSocketId !== 'string') {
+          socket.emit('error', { message: 'Invalid targetSocketId' });
           return;
         }
 
-        const room = roomManager.getRoom(roomId);
+        const normalizedRoomId = roomId.trim().toUpperCase();
+        const room = roomManager.getRoom(normalizedRoomId);
         if (!room || !room.users.has(socket.id)) {
           socket.emit('error', { message: 'Not in room' });
           return;
@@ -142,9 +199,9 @@ export function setupSocketHandlers(io, roomManager) {
           fromUserId: room.users.get(socket.id)?.userId,
         });
 
-        console.log(`[Socket] Answer relayed from ${socket.id} to ${targetSocketId}`);
+        logger.log(`[Socket] Answer relayed from ${socket.id} to ${targetSocketId}`);
       } catch (error) {
-        console.error(`[Socket] Error in answer:`, error);
+        logger.error(`[Socket] Error in answer:`, error);
         socket.emit('error', { message: 'Failed to relay answer' });
       }
     });
@@ -156,13 +213,30 @@ export function setupSocketHandlers(io, roomManager) {
      */
     socket.on('ice-candidate', ({ candidate, roomId, targetSocketId }) => {
       try {
+        // ICE candidates can be null, silently ignore
         if (!candidate || !roomId) {
-          return; // ICE candidates can be null, silently ignore
+          return;
         }
 
-        const room = roomManager.getRoom(roomId);
+        // Validate roomId format
+        if (!validateRoomId(roomId)) {
+          return; // Silently ignore invalid room IDs for ICE candidates
+        }
+
+        const normalizedRoomId = roomId.trim().toUpperCase();
+        const room = roomManager.getRoom(normalizedRoomId);
         if (!room || !room.users.has(socket.id)) {
           return; // Silently ignore if not in room
+        }
+
+        // Validate candidate format
+        if (typeof candidate !== 'object' || !candidate.candidate) {
+          return; // Silently ignore invalid candidates
+        }
+
+        // Validate targetSocketId if provided
+        if (targetSocketId && typeof targetSocketId !== 'string') {
+          return; // Silently ignore invalid targetSocketId
         }
 
         // If targetSocketId specified, send to that specific user
@@ -173,13 +247,13 @@ export function setupSocketHandlers(io, roomManager) {
             fromSocketId: socket.id,
           });
         } else {
-          socket.to(roomId).emit('ice-candidate', {
+          socket.to(normalizedRoomId).emit('ice-candidate', {
             candidate,
             fromSocketId: socket.id,
           });
         }
       } catch (error) {
-        console.error(`[Socket] Error in ice-candidate:`, error);
+        logger.error(`[Socket] Error in ice-candidate:`, error);
         // Silently ignore ICE candidate errors
       }
     });
@@ -191,31 +265,33 @@ export function setupSocketHandlers(io, roomManager) {
      */
     socket.on('host-changed', ({ roomId }) => {
       try {
-        if (!roomId) {
-          socket.emit('error', { message: 'Missing roomId' });
+        // Input validation
+        if (!validateRoomId(roomId)) {
+          socket.emit('error', { message: 'Invalid roomId format' });
           return;
         }
 
-        const room = roomManager.getRoom(roomId);
+        const normalizedRoomId = roomId.trim().toUpperCase();
+        const room = roomManager.getRoom(normalizedRoomId);
         if (!room || !room.users.has(socket.id)) {
           socket.emit('error', { message: 'Not in room' });
           return;
         }
 
-        const success = roomManager.setHost(roomId, socket.id);
+        const success = roomManager.setHost(normalizedRoomId, socket.id);
         if (success) {
           const newHost = room.users.get(socket.id);
           // Notify all users in room about host change
-          io.to(roomId).emit('host-changed', {
+          io.to(normalizedRoomId).emit('host-changed', {
             hostId: newHost.userId,
             hostName: newHost.name,
             socketId: socket.id,
           });
 
-          console.log(`[Socket] Host changed in room ${roomId} to ${newHost.userId}`);
+          logger.log(`[Socket] Host changed in room ${normalizedRoomId} to ${newHost.userId}`);
         }
       } catch (error) {
-        console.error(`[Socket] Error in host-changed:`, error);
+        logger.error(`[Socket] Error in host-changed:`, error);
         socket.emit('error', { message: 'Failed to update host' });
       }
     });
@@ -236,7 +312,7 @@ export function setupSocketHandlers(io, roomManager) {
      * Clean up when client disconnects
      */
     socket.on('disconnect', () => {
-      console.log(`[Socket] Client disconnected: ${socket.id}`);
+      logger.log(`[Socket] Client disconnected: ${socket.id}`);
       if (currentRoomId) {
         handleLeaveRoom(socket, currentRoomId);
       }
@@ -269,7 +345,7 @@ export function setupSocketHandlers(io, roomManager) {
           }
         }
 
-        console.log(`[Socket] ${socket.id} left room ${roomId}`);
+        logger.log(`[Socket] ${socket.id} left room ${roomId}`);
       }
     }
   });

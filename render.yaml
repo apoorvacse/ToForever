@@ -1,0 +1,30 @@
+# Render Blueprint for Watch Together Application
+# This file defines the services to deploy on Render
+
+services:
+  # Backend Signaling Server
+  - type: web
+    name: watch-together-server
+    env: node
+    plan: starter
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        sync: false  # Set this to your frontend URL after deployment
+    healthCheckPath: /health
+
+  # Frontend (Static Site)
+  - type: web
+    name: watch-together-client
+    env: static
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: client/dist
+    envVars:
+      - key: VITE_SOCKET_URL
+        sync: false  # Set this to your backend URL after deployment
+

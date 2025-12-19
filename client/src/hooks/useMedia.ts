@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { useRoomStore } from '@/store/roomStore';
+import { logger } from '@/lib/logger';
 
 export const useMedia = () => {
   const { updateLocalMedia, setLocalStream, setScreenShareStream, setHostId, localUser } = useRoomStore();
@@ -29,7 +30,7 @@ export const useMedia = () => {
       
       return stream;
     } catch (error) {
-      console.error('Failed to get media:', error);
+      logger.error('Failed to get media:', error);
       if (error instanceof DOMException) {
         if (error.name === 'NotAllowedError') {
           setPermissionError('Camera and microphone access denied. Please allow access to continue.');
@@ -43,22 +44,44 @@ export const useMedia = () => {
     }
   }, [setLocalStream, updateLocalMedia]);
 
+  /**
+   * Toggle camera on/off
+   * 
+   * EFFICIENT APPROACH:
+   * - Simply enable/disable the video track
+   * - No reloading, no delays, no complex logic
+   * - Modern browsers handle track.enabled changes automatically
+   * - Video element stays attached, just track state changes
+   */
   const toggleCamera = useCallback(() => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         updateLocalMedia({ isCameraOn: videoTrack.enabled });
+        logger.log(`Camera ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
       }
     }
   }, [updateLocalMedia]);
 
+  /**
+   * Toggle microphone on/off
+   * 
+   * IMPROVEMENT: Added proper state tracking and logging
+   */
   const toggleMicrophone = useCallback(() => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
+        const wasEnabled = audioTrack.enabled;
         audioTrack.enabled = !audioTrack.enabled;
         updateLocalMedia({ isMicOn: audioTrack.enabled });
+        logger.log(`Microphone ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+        
+        // Verify track state after toggle
+        if (audioTrack.enabled && audioTrack.readyState !== 'live') {
+          logger.warn('Audio track enabled but not in live state');
+        }
       }
     }
   }, [updateLocalMedia]);
@@ -95,7 +118,7 @@ export const useMedia = () => {
       
       return stream;
     } catch (error) {
-      console.error('Failed to start screen share:', error);
+      logger.error('Failed to start screen share:', error);
       if (error instanceof DOMException && error.name === 'NotAllowedError') {
         // User cancelled - not an error
         return null;
@@ -104,15 +127,33 @@ export const useMedia = () => {
     }
   }, [localUser, setHostId, setScreenShareStream, updateLocalMedia, stopScreenShare]);
 
+  /**
+   * Cleanup all media streams and tracks
+   * 
+   * IMPROVEMENT: Proper cleanup to prevent memory leaks
+   * - Stop all tracks before clearing refs
+   * - Clear refs to allow garbage collection
+   */
   const cleanup = useCallback(() => {
+    // Cleanup local stream
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((track) => {
+        track.stop();
+        track.enabled = false;
+      });
       localStreamRef.current = null;
     }
+    
+    // Cleanup screen share stream
     if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current.getTracks().forEach((track) => {
+        track.stop();
+        track.enabled = false;
+      });
       screenStreamRef.current = null;
     }
+    
+    logger.log('Media cleanup completed');
   }, []);
 
   return {

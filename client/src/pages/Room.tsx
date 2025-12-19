@@ -14,6 +14,7 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { PipButton } from '@/components/PipButton';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import { logger } from '@/lib/logger';
 import { Copy, Check, AlertCircle } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
@@ -66,8 +67,8 @@ const Room = () => {
     createAnswer: (offer: RTCSessionDescriptionInit, targetSocketId: string) => Promise<RTCSessionDescriptionInit | null>;
     handleAnswer: (answer: RTCSessionDescriptionInit) => Promise<void>;
     addIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>;
-    addScreenShareTrack: (screenStream: MediaStream) => void;
-    removeScreenShareTrack: (screenStream: MediaStream) => void;
+    addScreenShareTrack: (screenStream: MediaStream) => Promise<void>;
+    removeScreenShareTrack: (screenStream: MediaStream) => Promise<void>;
     getTargetSocketId: () => string | null;
   } | null>(null);
 
@@ -168,7 +169,7 @@ const Room = () => {
     userId: localUser?.id || '',
     userName: localUser?.name,
     onPeerJoined: useCallback((data) => {
-      console.log('Peer joined:', data);
+      logger.log('Peer joined:', data);
       // Set remote user info when peer joins
       setRemoteUser({
         id: data.userId,
@@ -188,41 +189,48 @@ const Room = () => {
       // Wait a bit for peer connection to be ready, then create offer
       setTimeout(() => {
         if (webrtcRef.current) {
-          webrtcRef.current.createOffer(data.socketId).catch(console.error);
+          webrtcRef.current.createOffer(data.socketId).catch((err) => {
+            logger.error('Failed to create offer:', err);
+          });
         }
       }, 500);
     }, [toast, setRemoteUser]),
     onPeerLeft: useCallback((data) => {
-      console.log('Peer left:', data);
+      logger.log('Peer left:', data);
       toast({
         title: 'Peer left',
         description: 'Your partner has left the room.',
       });
       setRemoteUser(null);
+      // BUG FIX: Clear screen share stream when remote user leaves
+      const { setScreenShareStream } = useRoomStore.getState();
+      setScreenShareStream(null);
     }, [toast, setRemoteUser]),
     onOffer: useCallback(async (data) => {
-      console.log('Received offer:', data);
+      logger.log('Received offer (may contain screen share tracks):', data);
       if (webrtcRef.current) {
         const answer = await webrtcRef.current.createAnswer(data.offer, data.fromSocketId);
         if (!answer) {
-          console.error('Failed to create answer');
+          logger.error('Failed to create answer');
+        } else {
+          logger.log('✅ Created answer for offer');
         }
       }
     }, []),
     onAnswer: useCallback(async (data) => {
-      console.log('Received answer:', data);
+      logger.log('Received answer:', data);
       if (webrtcRef.current) {
         await webrtcRef.current.handleAnswer(data.answer);
       }
     }, []),
     onIceCandidate: useCallback(async (data) => {
-      console.log('Received ICE candidate:', data);
+      logger.log('Received ICE candidate:', data);
       if (webrtcRef.current) {
         await webrtcRef.current.addIceCandidate(data.candidate);
       }
     }, []),
     onCreateOffer: useCallback(async (data) => {
-      console.log('Create offer requested:', data);
+      logger.log('Create offer requested:', data);
       // Wait a bit for peer connection to be ready
       setTimeout(async () => {
         if (webrtcRef.current) {
@@ -231,14 +239,14 @@ const Room = () => {
       }, 500);
     }, []),
     onHostChanged: useCallback((data) => {
-      console.log('Host changed:', data);
+      logger.log('Host changed:', data);
       toast({
         title: 'Host changed',
         description: `${data.hostName} is now the host.`,
       });
     }, [toast]),
     onError: useCallback((data) => {
-      console.error('Socket error:', data);
+      logger.error('Socket error:', data);
       toast({
         title: 'Connection error',
         description: data.message || 'An error occurred',
@@ -294,7 +302,7 @@ const Room = () => {
       // Wait for localUser to be set - it will trigger this effect again when set
       // Set a safety timeout to prevent infinite loading
       const timeout = setTimeout(() => {
-        console.warn('Local user not set after 2 seconds, proceeding anyway');
+        logger.warn('Local user not set after 2 seconds, proceeding anyway');
         setIsInitializing(false);
       }, 2000);
       return () => clearTimeout(timeout);
@@ -312,7 +320,7 @@ const Room = () => {
         // Always set initializing to false after attempting to initialize
         setIsInitializing(false);
       } catch (error) {
-        console.error('Failed to initialize:', error);
+        logger.error('Failed to initialize:', error);
         // Error handling is done in useMedia hook (permissionError)
         setIsInitializing(false);
       }
@@ -337,10 +345,21 @@ const Room = () => {
   }, []); // Empty deps - only runs on unmount
 
   const handleToggleScreenShare = useCallback(async () => {
+    // BUG FIX: Only host can share screen
+    // Check if current user is the host before allowing screen share
+    if (localUser?.id !== hostId) {
+      toast({
+        title: 'Only host can share screen',
+        description: 'You must be the host to share your screen.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (localUser?.mediaState.isScreenSharing) {
       // Remove screen share tracks from peer connection
       if (screenShareStream && webrtcRef.current) {
-        webrtcRef.current.removeScreenShareTrack(screenShareStream);
+        await webrtcRef.current.removeScreenShareTrack(screenShareStream);
       }
       stopScreenShare();
       socket.emitHostChanged();
@@ -352,17 +371,21 @@ const Room = () => {
       const stream = await startScreenShare();
       if (stream) {
         // Add screen share tracks to peer connection
+        // This will create a new offer and send it via socket
         if (webrtcRef.current) {
-          webrtcRef.current.addScreenShareTrack(stream);
+          await webrtcRef.current.addScreenShareTrack(stream);
         }
         socket.emitHostChanged();
         toast({
           title: 'Screen sharing started',
           description: 'Others can now see your screen.',
         });
+      } else {
+        // User cancelled screen share
+        logger.log('Screen share cancelled by user');
       }
     }
-  }, [localUser?.mediaState.isScreenSharing, screenShareStream, startScreenShare, stopScreenShare, socket, toast]);
+  }, [localUser?.mediaState.isScreenSharing, localUser?.id, hostId, screenShareStream, startScreenShare, stopScreenShare, socket, toast]);
 
   const handleLeaveRoom = useCallback(() => {
     cleanupMedia();
@@ -464,7 +487,13 @@ const Room = () => {
         {/* Screen Share Area (70-75%) */}
         <div className="flex-[3] min-w-0">
           <ScreenPlayer
-            stream={screenShareStream}
+            stream={
+              // BUG FIX: Show screen share from either local or remote host
+              // Priority: local screen share (if local user is sharing) > remote screen share
+              localUser?.mediaState.isScreenSharing && screenShareStream
+                ? screenShareStream
+                : screenShareStream // Remote screen share or local screen share
+            }
             hostName={getHostName()}
           />
         </div>
@@ -503,6 +532,7 @@ const Room = () => {
           isMicOn={localUser?.mediaState.isMicOn || false}
           isScreenSharing={localUser?.mediaState.isScreenSharing || false}
           isRemoteAudioMuted={isRemoteAudioMuted}
+          isHost={localUser?.id === hostId}
           onToggleCamera={toggleCamera}
           onToggleMic={toggleMicrophone}
           onToggleScreenShare={handleToggleScreenShare}

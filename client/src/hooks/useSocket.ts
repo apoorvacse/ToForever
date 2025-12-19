@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useRoomStore } from '@/store/roomStore';
+import { logger } from '@/lib/logger';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 
@@ -54,7 +55,7 @@ export const useSocket = (options: UseSocketOptions) => {
 
     // Connection events
     socket.on('connect', () => {
-      console.log('[Socket] Connected:', socket.id);
+      logger.log('[Socket] Connected:', socket.id);
       setConnectionStatus('connecting');
 
       // Join room after connection
@@ -66,18 +67,18 @@ export const useSocket = (options: UseSocketOptions) => {
     });
 
     socket.on('disconnect', () => {
-      console.log('[Socket] Disconnected');
+      logger.log('[Socket] Disconnected');
       setConnectionStatus('disconnected');
     });
 
     socket.on('connect_error', (error) => {
-      console.error('[Socket] Connection error:', error);
+      logger.error('[Socket] Connection error:', error);
       setConnectionStatus('disconnected');
     });
 
     // Room events
     socket.on('room-joined', (data) => {
-      console.log('[Socket] Room joined:', data);
+      logger.log('[Socket] Room joined:', data);
       setConnectionStatus('connected');
       if (data.isHost) {
         setHostId(options.userId);
@@ -95,46 +96,46 @@ export const useSocket = (options: UseSocketOptions) => {
     });
 
     socket.on('peer-joined', (data) => {
-      console.log('[Socket] Peer joined:', data);
+      logger.log('[Socket] Peer joined:', data);
       optionsRef.current.onPeerJoined?.(data);
     });
 
     socket.on('peer-left', (data) => {
-      console.log('[Socket] Peer left:', data);
+      logger.log('[Socket] Peer left:', data);
       optionsRef.current.onPeerLeft?.(data);
       setRemoteUser(null);
       setHostId(null);
     });
 
     socket.on('create-offer', (data) => {
-      console.log('[Socket] Create offer requested:', data);
+      logger.log('[Socket] Create offer requested:', data);
       optionsRef.current.onCreateOffer?.(data);
     });
 
     // WebRTC signaling events
     socket.on('offer', (data) => {
-      console.log('[Socket] Received offer:', data);
+      logger.log('[Socket] Received offer:', data);
       optionsRef.current.onOffer?.(data);
     });
 
     socket.on('answer', (data) => {
-      console.log('[Socket] Received answer:', data);
+      logger.log('[Socket] Received answer:', data);
       optionsRef.current.onAnswer?.(data);
     });
 
     socket.on('ice-candidate', (data) => {
-      console.log('[Socket] Received ICE candidate:', data);
+      logger.log('[Socket] Received ICE candidate:', data);
       optionsRef.current.onIceCandidate?.(data);
     });
 
     socket.on('host-changed', (data) => {
-      console.log('[Socket] Host changed:', data);
+      logger.log('[Socket] Host changed:', data);
       setHostId(data.hostId);
       optionsRef.current.onHostChanged?.(data);
     });
 
     socket.on('error', (data) => {
-      console.error('[Socket] Error:', data);
+      logger.error('[Socket] Error:', data);
       // Show user-friendly error message
       if (data.message) {
         // Error will be handled by Room component via toast
@@ -149,7 +150,7 @@ export const useSocket = (options: UseSocketOptions) => {
           socket.emit('leave-room');
         } catch (e) {
           // Ignore errors during cleanup
-          console.warn('[Socket] Error during cleanup:', e);
+          logger.warn('[Socket] Error during cleanup:', e);
         }
       }
       if (socket) {
