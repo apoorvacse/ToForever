@@ -1,0 +1,21 @@
+{
+  "name": "watch-together-server",
+  "version": "1.0.0",
+  "description": "WebRTC signaling server for Watch Together application",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["webrtc", "signaling", "socket.io"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.1"
+  }
+}
+
