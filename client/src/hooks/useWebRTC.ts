@@ -37,170 +37,264 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
 
     // Handle incoming tracks
     pc.ontrack = (event) => {
+      const track = event.track;
+      const stream = event.streams[0];
+      
       logger.log('Received remote track:', {
-        kind: event.track.kind,
-        label: event.track.label,
-        streamId: event.streams[0]?.id,
+        kind: track.kind,
+        label: track.label,
+        streamId: stream?.id,
         streamCount: event.streams.length,
+        trackId: track.id,
       });
 
-      if (event.streams[0]) {
-        const stream = event.streams[0];
-        const currentState = useRoomStore.getState();
-        const videoTrack = stream.getVideoTracks()[0];
+      if (!stream) {
+        logger.warn('Received track without stream');
+        return;
+      }
+
+      const currentState = useRoomStore.getState();
+      const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
+      
+      // CRITICAL BUG FIX: Handle audio tracks that arrive separately from screen share
+      // When sharing a tab, video and audio tracks can arrive in separate ontrack events
+      // We need to check if this track belongs to an existing screen share stream
+      
+      // Check if this stream ID matches an existing screen share stream
+      const existingScreenShareStream = currentState.screenShareStream;
+      const isExistingScreenShareStream = existingScreenShareStream && stream.id === existingScreenShareStream.id;
+      
+      // If this is an audio-only track and matches existing screen share stream, merge it
+      if (track.kind === 'audio' && isExistingScreenShareStream && !existingScreenShareStream.getAudioTracks().some(t => t.id === track.id)) {
+        logger.log('🔊 Merging audio track into existing screen share stream', {
+          trackLabel: track.label,
+          streamId: stream.id,
+        });
         
-        // BUG FIX: Better detection of screen share tracks
-        // Method 1: Check track label (most reliable)
-        let isScreenShare = false;
+        // Add the audio track to the existing screen share stream
+        existingScreenShareStream.addTrack(track);
         
-        if (videoTrack) {
-          const label = videoTrack.label.toLowerCase();
-          
-          // Screen share tracks typically have labels containing:
-          // - "screen" (e.g., "screen:0:0")
-          // - "display" (e.g., "Display 1")
-          // - "monitor" 
-          // - "window"
-          // - "application" (for window sharing)
-          isScreenShare = label.includes('screen') || 
-                         label.includes('display') || 
-                         label.includes('monitor') ||
-                         label.includes('window') ||
-                         label.includes('application');
-          
-          // Method 2: Check getSettings().displaySurface (most accurate)
-          if (!isScreenShare) {
-            try {
-              const settings = videoTrack.getSettings();
-              if (settings.displaySurface) {
-                isScreenShare = settings.displaySurface === 'screen' || 
-                               settings.displaySurface === 'window' ||
-                               settings.displaySurface === 'browser' ||
-                               settings.displaySurface === 'application';
-                logger.log('Detected screen share via displaySurface:', settings.displaySurface);
-              }
-            } catch (e) {
-              logger.warn('Could not access track settings:', e);
+        // Update the screen share stream to trigger re-render
+        setScreenShareStream(new MediaStream(existingScreenShareStream));
+        return;
+      }
+      
+      // BUG FIX: Better detection of screen share tracks
+      // Method 1: Check track label (most reliable)
+      let isScreenShare = false;
+      
+      if (videoTrack) {
+        const label = videoTrack.label.toLowerCase();
+        
+        // Screen share tracks typically have labels containing:
+        // - "screen" (e.g., "screen:0:0")
+        // - "display" (e.g., "Display 1")
+        // - "monitor" 
+        // - "window"
+        // - "application" (for window sharing)
+        isScreenShare = label.includes('screen') || 
+                       label.includes('display') || 
+                       label.includes('monitor') ||
+                       label.includes('window') ||
+                       label.includes('application');
+        
+        // Method 2: Check getSettings().displaySurface (most accurate)
+        if (!isScreenShare) {
+          try {
+            const settings = videoTrack.getSettings();
+            if (settings.displaySurface) {
+              isScreenShare = settings.displaySurface === 'screen' || 
+                             settings.displaySurface === 'window' ||
+                             settings.displaySurface === 'browser' ||
+                             settings.displaySurface === 'application';
+              logger.log('Detected screen share via displaySurface:', settings.displaySurface);
             }
+          } catch (e) {
+            logger.warn('Could not access track settings:', e);
           }
-          
-          // Method 3: Check if this is a different stream from the camera stream
-          // Screen share streams are usually separate from camera streams
-          if (!isScreenShare && currentState.remoteUser?.stream) {
-            const existingStreamId = currentState.remoteUser.stream.id;
-            // If we already have a remote user stream, and this is a different stream with video,
-            // it's likely a screen share (camera and screen share come in separate streams)
-            if (stream.id !== existingStreamId && videoTrack) {
-              // Double-check: if we already have a screen share stream, don't overwrite it
-              // unless this new stream is definitely a screen share
-              if (!currentState.screenShareStream || currentState.screenShareStream.id === stream.id) {
-                isScreenShare = true;
-                logger.log('Detected screen share via different stream ID', {
-                  newStreamId: stream.id,
-                  existingStreamId: existingStreamId,
-                });
-              }
-            }
-          }
-          
-          // Method 4: Fallback - if we already have a camera stream and this is a different stream,
-          // it's likely screen share (camera and screen share are separate streams)
-          if (!isScreenShare && currentState.remoteUser?.stream && videoTrack) {
-            const cameraStreamId = currentState.remoteUser.stream.id;
-            if (stream.id !== cameraStreamId) {
-              // Different stream ID = likely screen share
+        }
+        
+        // Method 3: Check if this is a different stream from the camera stream
+        // Screen share streams are usually separate from camera streams
+        if (!isScreenShare && currentState.remoteUser?.stream) {
+          const existingStreamId = currentState.remoteUser.stream.id;
+          // If we already have a remote user stream, and this is a different stream with video,
+          // it's likely a screen share (camera and screen share come in separate streams)
+          if (stream.id !== existingStreamId && videoTrack) {
+            // Double-check: if we already have a screen share stream, don't overwrite it
+            // unless this new stream is definitely a screen share
+            if (!currentState.screenShareStream || currentState.screenShareStream.id === stream.id) {
               isScreenShare = true;
-              logger.log('Detected screen share via stream ID difference (fallback)', {
+              logger.log('Detected screen share via different stream ID', {
                 newStreamId: stream.id,
-                cameraStreamId: cameraStreamId,
+                existingStreamId: existingStreamId,
               });
             }
           }
-          
-          // Method 5: If we don't have a remote user stream yet, but we have a screen share stream,
-          // check if this is the same stream
-          if (!isScreenShare && !currentState.remoteUser?.stream && currentState.screenShareStream) {
-            if (stream.id === currentState.screenShareStream.id) {
-              // This is the same stream as screen share, so it's screen share
-              isScreenShare = true;
-              logger.log('Detected screen share via existing screen share stream ID');
-            }
+        }
+        
+        // Method 4: Fallback - if we already have a camera stream and this is a different stream,
+        // it's likely screen share (camera and screen share are separate streams)
+        if (!isScreenShare && currentState.remoteUser?.stream && videoTrack) {
+          const cameraStreamId = currentState.remoteUser.stream.id;
+          if (stream.id !== cameraStreamId) {
+            // Different stream ID = likely screen share
+            isScreenShare = true;
+            logger.log('Detected screen share via stream ID difference (fallback)', {
+              newStreamId: stream.id,
+              cameraStreamId: cameraStreamId,
+            });
           }
         }
+        
+        // Method 5: If we don't have a remote user stream yet, but we have a screen share stream,
+        // check if this is the same stream
+        if (!isScreenShare && !currentState.remoteUser?.stream && currentState.screenShareStream) {
+          if (stream.id === currentState.screenShareStream.id) {
+            // This is the same stream as screen share, so it's screen share
+            isScreenShare = true;
+            logger.log('Detected screen share via existing screen share stream ID');
+          }
+        }
+      }
+      
+      // CRITICAL FIX: Also check if this is an audio track from a screen share stream
+      // Audio tracks from screen share can arrive separately and need special handling
+      if (!isScreenShare && track.kind === 'audio' && currentState.remoteUser?.stream) {
+        const cameraStreamId = currentState.remoteUser.stream.id;
+        // If this audio track is from a different stream than the camera, it might be screen share audio
+        if (stream.id !== cameraStreamId) {
+          // Check if we already have a screen share stream with this ID
+          if (existingScreenShareStream && stream.id === existingScreenShareStream.id) {
+            isScreenShare = true;
+            logger.log('🔊 Detected screen share audio track via existing stream ID');
+          } else if (!existingScreenShareStream) {
+            // This might be a new screen share stream (audio arriving before video)
+            // We'll create a screen share stream and add the audio track
+            isScreenShare = true;
+            logger.log('🔊 Detected potential screen share audio track (new stream)', {
+              streamId: stream.id,
+              trackLabel: track.label,
+            });
+          }
+        }
+      }
 
-        if (isScreenShare) {
-          // This is a screen share stream - store it separately
-          logger.log('✅ Received remote screen share stream', {
-            streamId: stream.id,
-            videoTrackLabel: videoTrack?.label,
-            hasVideo: !!videoTrack,
-            hasAudio: stream.getAudioTracks().length > 0,
+      if (isScreenShare) {
+        // This is a screen share stream - store it separately
+        logger.log('✅ Received remote screen share stream', {
+          streamId: stream.id,
+          videoTrackLabel: videoTrack?.label,
+          audioTrackLabel: audioTrack?.label,
+          hasVideo: !!videoTrack,
+          hasAudio: stream.getAudioTracks().length > 0,
+          audioTrackCount: stream.getAudioTracks().length,
+        });
+        
+        // If we already have a screen share stream with this ID, merge tracks
+        if (existingScreenShareStream && stream.id === existingScreenShareStream.id) {
+          // Merge tracks from new stream into existing stream
+          stream.getVideoTracks().forEach(track => {
+            if (!existingScreenShareStream.getVideoTracks().some(t => t.id === track.id)) {
+              existingScreenShareStream.addTrack(track);
+              logger.log('Merged video track into existing screen share stream');
+            }
           });
-          
-          setScreenShareStream(stream);
-          
-          // Also update remote user's screen sharing state
-          if (currentState.remoteUser) {
-            setRemoteUser({
-              ...currentState.remoteUser,
-              mediaState: {
-                ...currentState.remoteUser.mediaState,
-                isScreenSharing: true,
-              },
-            });
-          }
-          
-          // BUG FIX: Handle when remote host stops screen sharing
-          // Listen for track ended event to clear screen share stream
-          if (videoTrack) {
-            videoTrack.onended = () => {
-              logger.log('Remote screen share ended');
-              setScreenShareStream(null);
-              const state = useRoomStore.getState();
-              if (state.remoteUser) {
-                setRemoteUser({
-                  ...state.remoteUser,
-                  mediaState: {
-                    ...state.remoteUser.mediaState,
-                    isScreenSharing: false,
-                  },
-                });
-              }
-            };
-          }
+          stream.getAudioTracks().forEach(track => {
+            if (!existingScreenShareStream.getAudioTracks().some(t => t.id === track.id)) {
+              existingScreenShareStream.addTrack(track);
+              logger.log('🔊 Merged audio track into existing screen share stream', {
+                trackLabel: track.label,
+              });
+            }
+          });
+          // Update with new stream instance to trigger re-render
+          setScreenShareStream(new MediaStream(existingScreenShareStream));
         } else {
-          // This is a camera/audio stream - update remote user
-          logger.log('Received camera/audio stream', {
-            streamId: stream.id,
-            hasVideo: stream.getVideoTracks().length > 0,
-            hasAudio: stream.getAudioTracks().length > 0,
+          // New screen share stream
+          setScreenShareStream(stream);
+        }
+        
+        // Also update remote user's screen sharing state
+        if (currentState.remoteUser) {
+          setRemoteUser({
+            ...currentState.remoteUser,
+            mediaState: {
+              ...currentState.remoteUser.mediaState,
+              isScreenSharing: true,
+            },
           });
-          
-          if (currentState.remoteUser) {
-            setRemoteUser({
-              ...currentState.remoteUser,
-              mediaState: {
-                isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-                isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-                isScreenSharing: currentState.remoteUser.mediaState.isScreenSharing, // Preserve screen share state
-              },
-              stream: stream,
-            });
-          } else {
-            // Fallback: create remote user if it doesn't exist
-            const userId = Math.random().toString(36).substring(2, 10);
-            setRemoteUser({
-              id: userId,
-              name: `User ${userId.substring(0, 4)}`,
-              role: 'viewer',
-              mediaState: {
-                isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-                isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-                isScreenSharing: false,
-              },
-              stream: stream,
-            });
-          }
+        }
+        
+        // BUG FIX: Handle when remote host stops screen sharing
+        // Listen for track ended event to clear screen share stream
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            logger.log('Remote screen share ended');
+            setScreenShareStream(null);
+            const state = useRoomStore.getState();
+            if (state.remoteUser) {
+              setRemoteUser({
+                ...state.remoteUser,
+                mediaState: {
+                  ...state.remoteUser.mediaState,
+                  isScreenSharing: false,
+                },
+              });
+            }
+          };
+        }
+        
+        // Also listen for audio track ended
+        if (audioTrack) {
+          audioTrack.onended = () => {
+            logger.log('🔊 Remote screen share audio track ended');
+            const state = useRoomStore.getState();
+            if (state.screenShareStream) {
+              // Remove the ended audio track from the stream
+              const updatedStream = new MediaStream(state.screenShareStream);
+              updatedStream.getAudioTracks().forEach(t => {
+                if (t.id === audioTrack.id) {
+                  updatedStream.removeTrack(t);
+                }
+              });
+              setScreenShareStream(updatedStream.getTracks().length > 0 ? updatedStream : null);
+            }
+          };
+        }
+      } else {
+        // This is a camera/audio stream - update remote user
+        logger.log('Received camera/audio stream', {
+          streamId: stream.id,
+          hasVideo: stream.getVideoTracks().length > 0,
+          hasAudio: stream.getAudioTracks().length > 0,
+        });
+        
+        if (currentState.remoteUser) {
+          setRemoteUser({
+            ...currentState.remoteUser,
+            mediaState: {
+              isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
+              isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
+              isScreenSharing: currentState.remoteUser.mediaState.isScreenSharing, // Preserve screen share state
+            },
+            stream: stream,
+          });
+        } else {
+          // Fallback: create remote user if it doesn't exist
+          const userId = Math.random().toString(36).substring(2, 10);
+          setRemoteUser({
+            id: userId,
+            name: `User ${userId.substring(0, 4)}`,
+            role: 'viewer',
+            mediaState: {
+              isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
+              isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
+              isScreenSharing: false,
+            },
+            stream: stream,
+          });
         }
       }
     };
@@ -365,13 +459,34 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
 
     const videoTrack = screenStream.getVideoTracks()[0];
     const audioTrack = screenStream.getAudioTracks()[0];
+    const allTracks = screenStream.getTracks();
 
     logger.log('Adding screen share tracks to peer connection', {
       hasVideo: !!videoTrack,
       hasAudio: !!audioTrack,
       videoLabel: videoTrack?.label,
+      audioLabel: audioTrack?.label,
       streamId: screenStream.id,
+      totalTracks: allTracks.length,
+      trackKinds: allTracks.map(t => t.kind),
     });
+
+    // CRITICAL: Warn if no audio track is found
+    // This helps debug tab audio sharing issues
+    if (!audioTrack) {
+      logger.warn('⚠️ No audio track found in screen share stream!', {
+        streamId: screenStream.id,
+        videoTrackLabel: videoTrack?.label,
+        allTracks: allTracks.map(t => ({ kind: t.kind, label: t.label, enabled: t.enabled, readyState: t.readyState })),
+        hint: 'Make sure "Share tab audio" is checked in the browser screen share dialog',
+      });
+    } else {
+      logger.log('🔊 Screen share audio track found', {
+        label: audioTrack.label,
+        enabled: audioTrack.enabled,
+        readyState: audioTrack.readyState,
+      });
+    }
 
     // Check if tracks are already added
     const existingSenders = pc.getSenders();
@@ -381,11 +496,21 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
     // Add tracks with the screen stream so they can be identified
     if (videoTrack && !hasVideoSender) {
       pc.addTrack(videoTrack, screenStream);
-      logger.log('Added screen share video track');
+      logger.log('✅ Added screen share video track');
+    } else if (videoTrack && hasVideoSender) {
+      logger.log('Screen share video track already added');
     }
+    
     if (audioTrack && !hasAudioSender) {
       pc.addTrack(audioTrack, screenStream);
-      logger.log('Added screen share audio track');
+      logger.log('🔊 Added screen share audio track', {
+        trackLabel: audioTrack.label,
+        trackId: audioTrack.id,
+      });
+    } else if (audioTrack && hasAudioSender) {
+      logger.log('Screen share audio track already added');
+    } else if (!audioTrack) {
+      logger.warn('⚠️ Cannot add screen share audio track - track not found in stream');
     }
 
     // Create a new offer to send the screen share tracks

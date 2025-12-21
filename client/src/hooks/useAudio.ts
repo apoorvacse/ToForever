@@ -98,18 +98,80 @@ export const useAudio = () => {
    * Connect screen share audio
    * 
    * BUG FIX: Volume wasn't being applied when audio element was created
+   * CRITICAL FIX: Handle stream updates when audio tracks are added later
    * 
-   * SOLUTION: Apply stored volume when connecting stream
+   * SOLUTION: 
+   * 1. Apply stored volume when connecting stream
+   * 2. Check for audio tracks and log warnings if missing
+   * 3. Handle stream updates properly
    */
   const connectScreenAudio = useCallback((stream: MediaStream) => {
+    if (!stream) {
+      logger.warn('connectScreenAudio called with null/undefined stream');
+      return;
+    }
+    
+    const audioTracks = stream.getAudioTracks();
+    logger.log('🔊 Connecting screen share audio', {
+      streamId: stream.id,
+      audioTrackCount: audioTracks.length,
+      audioTrackLabels: audioTracks.map(t => t.label),
+      audioTracksEnabled: audioTracks.map(t => t.enabled),
+    });
+    
+    if (audioTracks.length === 0) {
+      logger.warn('⚠️ No audio tracks in screen share stream!', {
+        streamId: stream.id,
+        videoTracks: stream.getVideoTracks().length,
+        hint: 'Audio track may arrive later, or "Share tab audio" was not checked',
+      });
+    }
+    
     if (!screenAudioRef.current) {
       screenAudioRef.current = new Audio();
       screenAudioRef.current.autoplay = true;
+      screenAudioRef.current.volume = movieVolumeRef.current;
+      logger.log('Created new screen share audio element');
     }
-    screenAudioRef.current.srcObject = stream;
-    // Apply stored volume when connecting
+    
+    // CRITICAL: Update srcObject even if it's the same stream reference
+    // This ensures audio tracks added later are properly connected
+    const currentSrcObject = screenAudioRef.current.srcObject as MediaStream | null;
+    if (currentSrcObject?.id !== stream.id || currentSrcObject?.getAudioTracks().length !== audioTracks.length) {
+      screenAudioRef.current.srcObject = stream;
+      logger.log('🔊 Updated screen share audio srcObject', {
+        oldStreamId: currentSrcObject?.id,
+        newStreamId: stream.id,
+        oldAudioTracks: currentSrcObject?.getAudioTracks().length || 0,
+        newAudioTracks: audioTracks.length,
+      });
+    }
+    
+    // Apply stored volume
     screenAudioRef.current.volume = movieVolumeRef.current;
-    logger.log(`Screen share audio connected, volume: ${(movieVolumeRef.current * 100).toFixed(0)}%`);
+    
+    // Listen for audio track additions to the stream
+    const handleAddTrack = (event: MediaStreamTrackEvent) => {
+      if (event.track.kind === 'audio') {
+        logger.log('🔊 Audio track added to screen share stream (detected in useAudio)', {
+          trackLabel: event.track.label,
+          streamId: stream.id,
+        });
+        // Update srcObject to ensure the new track is connected
+        if (screenAudioRef.current) {
+          screenAudioRef.current.srcObject = stream;
+        }
+      }
+    };
+    
+    // Remove old listener if it exists
+    stream.removeEventListener('addtrack', handleAddTrack);
+    // Add new listener
+    stream.addEventListener('addtrack', handleAddTrack);
+    
+    logger.log(`🔊 Screen share audio connected, volume: ${(movieVolumeRef.current * 100).toFixed(0)}%`, {
+      audioTrackCount: audioTracks.length,
+    });
   }, []);
 
   // Cleanup

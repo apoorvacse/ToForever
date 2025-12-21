@@ -103,6 +103,27 @@ export const useMedia = () => {
         audio: true,
       });
       
+      logger.log('Screen share stream captured', {
+        hasVideo: stream.getVideoTracks().length > 0,
+        hasAudio: stream.getAudioTracks().length > 0,
+        videoTracks: stream.getVideoTracks().map(t => ({ label: t.label, enabled: t.enabled })),
+        audioTracks: stream.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled })),
+      });
+      
+      // CRITICAL: Warn if no audio track is present
+      // This helps users understand why tab audio might not work
+      if (stream.getAudioTracks().length === 0) {
+        logger.warn('⚠️ No audio track in screen share stream!', {
+          hint: 'Make sure "Share tab audio" is checked in the browser dialog',
+          videoTrackLabel: stream.getVideoTracks()[0]?.label,
+        });
+      } else {
+        logger.log('🔊 Screen share audio track present', {
+          audioTrackLabel: stream.getAudioTracks()[0].label,
+          audioTrackEnabled: stream.getAudioTracks()[0].enabled,
+        });
+      }
+      
       screenStreamRef.current = stream;
       setScreenShareStream(stream);
       updateLocalMedia({ isScreenSharing: true });
@@ -112,9 +133,39 @@ export const useMedia = () => {
       }
       
       // Handle when user stops sharing via browser UI
-      stream.getVideoTracks()[0].onended = () => {
-        stopScreenShare();
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
+      
+      // CRITICAL FIX: Listen for audio track additions
+      // Some browsers add audio tracks asynchronously after the initial capture
+      // We need to detect when audio tracks are added and update the stream
+      const checkForAudioTracks = () => {
+        const currentAudioTracks = stream.getAudioTracks();
+        if (currentAudioTracks.length > 0 && screenStreamRef.current === stream) {
+          logger.log('🔊 Audio track detected in screen share stream (late addition)', {
+            audioTrackLabel: currentAudioTracks[0].label,
+          });
+          // Update the screen share stream to trigger re-render and re-add to peer connection
+          setScreenShareStream(new MediaStream(stream));
+        }
       };
+      
+      // Check immediately and also set up a listener for track additions
+      checkForAudioTracks();
+      
+      // Some browsers fire 'addtrack' event when tracks are added
+      stream.addEventListener('addtrack', (event) => {
+        if (event.track.kind === 'audio') {
+          logger.log('🔊 Audio track added to screen share stream', {
+            trackLabel: event.track.label,
+          });
+          checkForAudioTracks();
+        }
+      });
       
       return stream;
     } catch (error) {
