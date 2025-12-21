@@ -20,7 +20,7 @@ export function createHTTPServer() {
   // CORS configuration - support multiple origins for production
   const allowedOrigins = process.env.FRONTEND_URL 
     ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
-    : ['https://to-forever-app.vercel.app'];
+    : ['https://to-forever-app.netlify.app'];
 
   app.use(cors({
     origin: (origin, callback) => {

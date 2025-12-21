@@ -11,7 +11,7 @@ import { logger } from './logger.js';
 
 // Configuration
 const PORT = process.env.PORT || 3001;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://to-forever-app.vercel.app';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://to-forever-app.netlify.app';
 
 // Initialize room manager
 const roomManager = new RoomManager();
