@@ -1,5 +1,5 @@
 /**
- * Watch Together Signaling Server
+ * ToForever Signaling Server
  * Entry point for WebRTC signaling backend
  */
 
@@ -11,7 +11,7 @@ import { logger } from './logger.js';
 
 // Configuration
 const PORT = process.env.PORT || 3001;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://to-forever-app.vercel.app';
 
 // Initialize room manager
 const roomManager = new RoomManager();
@@ -48,13 +48,13 @@ const io = new Server(httpServer, {
 setupSocketHandlers(io, roomManager);
 
 app.get('/', (req, res) => {
-  res.send('Watch Together - Signaling Server');
+  res.send('ToForever - Signaling Server');
 });
 
 // Start server
 httpServer.listen(PORT, () => {
   logger.info('╔═══════════════════════════════════════════════════════╗');
-  logger.info('║   Watch Together - Signaling Server                   ║');
+  logger.info('║   ToForever - Signaling Server                   ║');
   logger.info('╠═══════════════════════════════════════════════════════╣');
   logger.info(`║   Server running on port: ${PORT.toString().padEnd(35)}║`);
   logger.info(`║   Frontend URL: ${FRONTEND_URL.padEnd(38)}║`);
