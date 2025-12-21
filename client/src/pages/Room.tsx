@@ -454,7 +454,7 @@ const Room = () => {
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-semibold text-foreground">Watch Together</h1>
+          <h1 className="text-lg font-semibold text-foreground">ToForever</h1>
           <StatusBadge status={connectionStatus} />
         </div>
         <div className="flex items-center gap-3">

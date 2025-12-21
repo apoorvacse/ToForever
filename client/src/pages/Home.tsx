@@ -81,7 +81,7 @@ const Home = () => {
             <span className="text-sm font-medium">Real-time reactions</span>
           </div>
           <h1 className="text-5xl md:text-7xl font-bold text-foreground mb-6 tracking-tight">
-            Watch Together
+            ToForever
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             Share your screen, see each other's reactions, and enjoy movies together in real-time — 

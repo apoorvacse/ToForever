@@ -1,4 +1,4 @@
-# 🎬 Watch Together
+# 🎬 ToForever
 
 <div align="center">
 

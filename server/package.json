@@ -1,7 +1,7 @@
 {
   "name": "watch-together-server",
   "version": "1.0.0",
-  "description": "WebRTC signaling server for Watch Together application",
+  "description": "WebRTC signaling server for ToForever application",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
