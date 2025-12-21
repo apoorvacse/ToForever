@@ -3,12 +3,18 @@ import { useRoomStore } from '@/store/roomStore';
 import { logger } from '@/lib/logger';
 
 export const useAudio = () => {
-  const { isRemoteAudioMuted, setRemoteAudioMuted, remoteUser, screenShareStream } = useRoomStore();
+  const { isRemoteAudioMuted, setRemoteAudioMuted, remoteUser, screenShareStream, localUser } = useRoomStore();
   
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const screenAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
+  
+  // Mic input gain control
+  const micGainNodeRef = useRef<GainNode | null>(null);
+  const micMediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micMediaStreamDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const micVolumeRef = useRef<number>(1.0);
 
   // Initialize Web Audio API for advanced audio control
   const initAudioContext = useCallback(() => {
@@ -19,6 +25,109 @@ export const useAudio = () => {
     }
     return audioContextRef.current;
   }, []);
+  
+  /**
+   * Set microphone input volume (0-1)
+   * 
+   * CRITICAL FIX: Control mic input gain using Web Audio API
+   * This affects the volume of audio sent to remote peers
+   * 
+   * SOLUTION:
+   * 1. Create a gain node for mic input
+   * 2. Process the mic track through the gain node
+   * 3. Replace the track in the peer connection with the processed track
+   */
+  const setMicVolume = useCallback((volume: number, localStream: MediaStream | null, replaceTrackFn?: (newTrack: MediaStreamTrack) => Promise<void>) => {
+    // Clamp volume to valid range (0-2 for amplification, but typically 0-1)
+    const clampedVolume = Math.max(0, Math.min(2, volume));
+    micVolumeRef.current = clampedVolume;
+    
+    if (!localStream) {
+      logger.warn('Cannot set mic volume: no local stream');
+      return;
+    }
+    
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (!audioTrack) {
+      logger.warn('Cannot set mic volume: no audio track in local stream');
+      return;
+    }
+    
+    // Initialize audio context if needed
+    if (!audioContextRef.current) {
+      initAudioContext();
+    }
+    
+    const audioContext = audioContextRef.current!;
+    
+    // Clean up existing nodes
+    if (micMediaStreamSourceRef.current) {
+      micMediaStreamSourceRef.current.disconnect();
+      micMediaStreamSourceRef.current = null;
+    }
+    if (micGainNodeRef.current) {
+      micGainNodeRef.current.disconnect();
+      micGainNodeRef.current = null;
+    }
+    if (micMediaStreamDestinationRef.current) {
+      micMediaStreamDestinationRef.current.disconnect();
+      micMediaStreamDestinationRef.current = null;
+    }
+    
+    try {
+      // Create audio processing pipeline for mic input
+      const source = audioContext.createMediaStreamSource(localStream);
+      micMediaStreamSourceRef.current = source;
+      
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = clampedVolume;
+      micGainNodeRef.current = gainNode;
+      
+      const destination = audioContext.createMediaStreamDestination();
+      micMediaStreamDestinationRef.current = destination;
+      
+      // Connect: source -> gain -> destination
+      source.connect(gainNode);
+      gainNode.connect(destination);
+      
+      // Smooth gain transition to prevent audio pops
+      const currentGain = micGainNodeRef.current?.gain.value || 1.0;
+      const duration = 100; // 100ms transition
+      const steps = 10;
+      const stepSize = (clampedVolume - currentGain) / steps;
+      const stepDuration = duration / steps;
+      
+      let step = 0;
+      const gainTransition = setInterval(() => {
+        step++;
+        if (step >= steps) {
+          gainNode.gain.value = clampedVolume;
+          clearInterval(gainTransition);
+        } else {
+          gainNode.gain.value = currentGain + (stepSize * step);
+        }
+      }, stepDuration);
+      
+      // Get the processed audio track
+      const processedTrack = destination.stream.getAudioTracks()[0];
+      
+      // Replace the track in the peer connection if function provided
+      if (replaceTrackFn && processedTrack) {
+        replaceTrackFn(processedTrack).catch((err) => {
+          logger.error('Failed to replace mic track:', err);
+        });
+      }
+      
+      logger.log(`🎤 Mic input volume set to: ${(clampedVolume * 100).toFixed(0)}%`, {
+        originalTrackId: audioTrack.id,
+        processedTrackId: processedTrack?.id,
+      });
+    } catch (error) {
+      logger.error('Failed to set mic volume:', error);
+      // Fallback: if Web Audio API fails, at least log the volume change
+      logger.warn('Using fallback mic volume control (may not affect outgoing audio)');
+    }
+  }, [initAudioContext]);
 
   // Mute/unmute remote audio (voice chat)
   const toggleRemoteAudio = useCallback(() => {
@@ -49,9 +158,26 @@ export const useAudio = () => {
     const clampedVolume = Math.max(0, Math.min(1, volume));
     remoteVolumeRef.current = clampedVolume;
     
-    // Apply volume if audio element exists
+    // Apply volume if audio element exists with smooth transition
     if (remoteAudioRef.current) {
-      remoteAudioRef.current.volume = clampedVolume;
+      // Smooth volume transition to prevent audio pops
+      const currentVolume = remoteAudioRef.current.volume;
+      const duration = 100; // 100ms transition
+      const steps = 10;
+      const stepSize = (clampedVolume - currentVolume) / steps;
+      const stepDuration = duration / steps;
+      
+      let step = 0;
+      const transition = setInterval(() => {
+        step++;
+        if (step >= steps) {
+          remoteAudioRef.current!.volume = clampedVolume;
+          clearInterval(transition);
+        } else {
+          remoteAudioRef.current!.volume = currentVolume + (stepSize * step);
+        }
+      }, stepDuration);
+      
       logger.log(`Remote audio volume set to: ${(clampedVolume * 100).toFixed(0)}%`);
     }
   }, []);
@@ -68,9 +194,26 @@ export const useAudio = () => {
     const clampedVolume = Math.max(0, Math.min(1, volume));
     movieVolumeRef.current = clampedVolume;
     
-    // Apply volume if audio element exists
+    // Apply volume if audio element exists with smooth transition
     if (screenAudioRef.current) {
-      screenAudioRef.current.volume = clampedVolume;
+      // Smooth volume transition to prevent audio pops
+      const currentVolume = screenAudioRef.current.volume;
+      const duration = 100; // 100ms transition
+      const steps = 10;
+      const stepSize = (clampedVolume - currentVolume) / steps;
+      const stepDuration = duration / steps;
+      
+      let step = 0;
+      const transition = setInterval(() => {
+        step++;
+        if (step >= steps) {
+          screenAudioRef.current!.volume = clampedVolume;
+          clearInterval(transition);
+        } else {
+          screenAudioRef.current!.volume = currentVolume + (stepSize * step);
+        }
+      }, stepDuration);
+      
       logger.log(`Movie audio volume set to: ${(clampedVolume * 100).toFixed(0)}%`);
     }
   }, []);
@@ -204,12 +347,35 @@ export const useAudio = () => {
     }
   }, [screenShareStream, connectScreenAudio]);
 
+  // Cleanup mic gain nodes
+  const cleanupMicGain = useCallback(() => {
+    if (micMediaStreamSourceRef.current) {
+      micMediaStreamSourceRef.current.disconnect();
+      micMediaStreamSourceRef.current = null;
+    }
+    if (micGainNodeRef.current) {
+      micGainNodeRef.current.disconnect();
+      micGainNodeRef.current = null;
+    }
+    if (micMediaStreamDestinationRef.current) {
+      micMediaStreamDestinationRef.current.disconnect();
+      micMediaStreamDestinationRef.current = null;
+    }
+  }, []);
+
+  // Enhanced cleanup
+  const enhancedCleanup = useCallback(() => {
+    cleanup();
+    cleanupMicGain();
+  }, [cleanup, cleanupMicGain]);
+
   return {
     isRemoteAudioMuted,
     toggleRemoteAudio,
     setRemoteVolume,
     setMovieVolume,
+    setMicVolume, // NEW: Mic input volume control
     initAudioContext,
-    cleanup,
+    cleanup: enhancedCleanup,
   };
 };

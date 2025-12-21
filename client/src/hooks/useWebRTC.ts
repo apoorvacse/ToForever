@@ -271,30 +271,122 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
           hasAudio: stream.getAudioTracks().length > 0,
         });
         
-        if (currentState.remoteUser) {
-          setRemoteUser({
-            ...currentState.remoteUser,
-            mediaState: {
-              isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-              isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-              isScreenSharing: currentState.remoteUser.mediaState.isScreenSharing, // Preserve screen share state
-            },
-            stream: stream,
-          });
-        } else {
-          // Fallback: create remote user if it doesn't exist
-          const userId = Math.random().toString(36).substring(2, 10);
-          setRemoteUser({
-            id: userId,
-            name: `User ${userId.substring(0, 4)}`,
-            role: 'viewer',
-            mediaState: {
-              isCameraOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-              isMicOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-              isScreenSharing: false,
-            },
-            stream: stream,
-          });
+        // Helper function to update remote user media state
+        const updateRemoteMediaState = (stream: MediaStream) => {
+          const videoTrack = stream.getVideoTracks()[0];
+          const audioTrack = stream.getAudioTracks()[0];
+          
+          const newMediaState = {
+            isCameraOn: !!videoTrack && videoTrack.enabled,
+            isMicOn: !!audioTrack && audioTrack.enabled,
+            isScreenSharing: currentState.remoteUser?.mediaState.isScreenSharing || false,
+          };
+          
+          if (currentState.remoteUser) {
+            setRemoteUser({
+              ...currentState.remoteUser,
+              mediaState: newMediaState,
+              stream: stream,
+            });
+          } else {
+            // Fallback: create remote user if it doesn't exist
+            const userId = Math.random().toString(36).substring(2, 10);
+            setRemoteUser({
+              id: userId,
+              name: `User ${userId.substring(0, 4)}`,
+              role: 'viewer',
+              mediaState: newMediaState,
+              stream: stream,
+            });
+          }
+        };
+        
+        // Update media state immediately
+        updateRemoteMediaState(stream);
+        
+        // CRITICAL FIX: Listen for track state changes (mute/unmute)
+        // This ensures the remote UI updates in real-time when tracks are enabled/disabled
+        const videoTrack = stream.getVideoTracks()[0];
+        const audioTrack = stream.getAudioTracks()[0];
+        
+        if (videoTrack) {
+          // Remove old listener if exists
+          const oldHandler = (videoTrack as any).__onEnabledChange;
+          if (oldHandler) {
+            videoTrack.removeEventListener('ended', oldHandler);
+          }
+          
+          // Listen for track enabled/disabled changes
+          const handleVideoTrackChange = () => {
+            logger.log('Remote video track state changed:', {
+              enabled: videoTrack.enabled,
+              readyState: videoTrack.readyState,
+            });
+            updateRemoteMediaState(stream);
+          };
+          
+          // Store handler for cleanup
+          (videoTrack as any).__onEnabledChange = handleVideoTrackChange;
+          
+          // Use MutationObserver or polling to detect enabled changes
+          // Since MediaStreamTrack doesn't fire events for enabled changes,
+          // we'll poll the enabled state and update when it changes
+          let lastVideoEnabled = videoTrack.enabled;
+          const videoTrackPoll = setInterval(() => {
+            if (videoTrack.readyState === 'ended') {
+              clearInterval(videoTrackPoll);
+              return;
+            }
+            if (videoTrack.enabled !== lastVideoEnabled) {
+              lastVideoEnabled = videoTrack.enabled;
+              handleVideoTrackChange();
+            }
+          }, 200); // Poll every 200ms
+          
+          // Cleanup on track end
+          videoTrack.onended = () => {
+            clearInterval(videoTrackPoll);
+            updateRemoteMediaState(stream);
+          };
+        }
+        
+        if (audioTrack) {
+          // Remove old listener if exists
+          const oldHandler = (audioTrack as any).__onEnabledChange;
+          if (oldHandler) {
+            audioTrack.removeEventListener('ended', oldHandler);
+          }
+          
+          // Listen for track enabled/disabled changes
+          const handleAudioTrackChange = () => {
+            logger.log('Remote audio track state changed:', {
+              enabled: audioTrack.enabled,
+              readyState: audioTrack.readyState,
+            });
+            updateRemoteMediaState(stream);
+          };
+          
+          // Store handler for cleanup
+          (audioTrack as any).__onEnabledChange = handleAudioTrackChange;
+          
+          // Poll for enabled state changes
+          let lastAudioEnabled = audioTrack.enabled;
+          const audioTrackPoll = setInterval(() => {
+            if (audioTrack.readyState === 'ended') {
+              clearInterval(audioTrackPoll);
+              return;
+            }
+            if (audioTrack.enabled !== lastAudioEnabled) {
+              lastAudioEnabled = audioTrack.enabled;
+              handleAudioTrackChange();
+            }
+          }, 200); // Poll every 200ms
+          
+          // Cleanup on track end
+          audioTrack.onended = () => {
+            clearInterval(audioTrackPoll);
+            updateRemoteMediaState(stream);
+          };
         }
       }
     };

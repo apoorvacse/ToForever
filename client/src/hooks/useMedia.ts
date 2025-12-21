@@ -11,22 +11,35 @@ export const useMedia = () => {
   const initializeMedia = useCallback(async () => {
     try {
       setPermissionError(null);
+      // CRITICAL FIX: Enhanced audio constraints to prevent echo
+      // echoCancellation, noiseSuppression, and autoGainControl are essential
+      // sampleRate and channelCount help with quality
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
           height: { ideal: 480 },
           facingMode: 'user',
+          frameRate: { ideal: 30, max: 30 }, // Optimize frame rate
         },
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: true, // CRITICAL: Prevents echo feedback
+          noiseSuppression: true, // Reduces background noise
+          autoGainControl: true, // Normalizes volume
+          sampleRate: { ideal: 48000 }, // High quality audio
+          channelCount: { ideal: 1 }, // Mono for voice (reduces bandwidth)
+          // Suppress echo from system audio
+          suppressLocalAudioPlayback: true, // Chrome-specific: prevents echo
         },
       });
       
       localStreamRef.current = stream;
       setLocalStream(stream);
       updateLocalMedia({ isCameraOn: true, isMicOn: true });
+      
+      logger.log('Media initialized with echo cancellation enabled', {
+        audioTracks: stream.getAudioTracks().length,
+        videoTracks: stream.getVideoTracks().length,
+      });
       
       return stream;
     } catch (error) {
@@ -98,9 +111,25 @@ export const useMedia = () => {
 
   const startScreenShare = useCallback(async () => {
     try {
+      // PERFORMANCE OPTIMIZATION: Optimized screen share constraints
+      // - Limit resolution to reduce bandwidth and improve performance
+      // - Set frame rate for smoother playback
+      // - Enable audio with echo cancellation to prevent feedback
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
+        video: {
+          displaySurface: 'any', // Allow screen, window, or tab
+          width: { ideal: 1920, max: 1920 }, // Full HD max
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 30, max: 30 }, // 30fps for smooth playback
+          cursor: 'always', // Always show cursor
+        },
+        audio: {
+          echoCancellation: true, // CRITICAL: Prevents echo from system audio
+          noiseSuppression: true,
+          autoGainControl: true,
+          suppressLocalAudioPlayback: true, // Chrome-specific: prevents echo
+          sampleRate: { ideal: 48000 },
+        },
       });
       
       logger.log('Screen share stream captured', {

@@ -69,6 +69,7 @@ const Room = () => {
     addIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>;
     addScreenShareTrack: (screenStream: MediaStream) => Promise<void>;
     removeScreenShareTrack: (screenStream: MediaStream) => Promise<void>;
+    replaceTrack: (newTrack: MediaStreamTrack, oldTrack?: MediaStreamTrack) => Promise<void>;
     getTargetSocketId: () => string | null;
   } | null>(null);
 
@@ -81,6 +82,7 @@ const Room = () => {
     addIceCandidate,
     addScreenShareTrack,
     removeScreenShareTrack,
+    replaceTrack,
     getTargetSocketId,
     cleanup: cleanupWebRTC,
   } = useWebRTC({
@@ -107,16 +109,30 @@ const Room = () => {
       addIceCandidate,
       addScreenShareTrack,
       removeScreenShareTrack,
+      replaceTrack,
       getTargetSocketId,
     };
-  }, [createOffer, createAnswer, handleAnswer, addIceCandidate, addScreenShareTrack, removeScreenShareTrack, getTargetSocketId]);
+  }, [createOffer, createAnswer, handleAnswer, addIceCandidate, addScreenShareTrack, removeScreenShareTrack, replaceTrack, getTargetSocketId]);
 
   const {
     toggleRemoteAudio,
     setRemoteVolume,
     setMovieVolume,
+    setMicVolume,
     cleanup: cleanupAudio,
   } = useAudio();
+  
+  // Handle mic volume change with track replacement
+  const handleMicVolumeChange = useCallback((volume: number) => {
+    const localStream = localUser?.stream || null;
+    const replaceTrackFn = async (newTrack: MediaStreamTrack) => {
+      if (webrtcRef.current) {
+        const oldTrack = localStream?.getAudioTracks()[0];
+        await webrtcRef.current.replaceTrack(newTrack, oldTrack);
+      }
+    };
+    setMicVolume(volume, localStream, replaceTrackFn);
+  }, [localUser?.stream, setMicVolume]);
 
   // Picture-in-Picture for partner's video
   const { isPipActive, isPipSupported, togglePip } = usePictureInPicture({
@@ -538,7 +554,7 @@ const Room = () => {
           onToggleScreenShare={handleToggleScreenShare}
           onToggleRemoteAudio={toggleRemoteAudio}
           onLeaveRoom={handleLeaveRoom}
-          onMicVolumeChange={setRemoteVolume}
+          onMicVolumeChange={handleMicVolumeChange}
           onMovieVolumeChange={setMovieVolume}
         />
       </footer>
