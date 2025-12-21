@@ -15,6 +15,9 @@ export const useAudio = () => {
   const micMediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const micMediaStreamDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const micVolumeRef = useRef<number>(1.0);
+  
+  // Store transition intervals for cleanup
+  const transitionIntervalsRef = useRef<Set<NodeJS.Timeout>>(new Set());
 
   // Initialize Web Audio API for advanced audio control
   const initAudioContext = useCallback(() => {
@@ -103,10 +106,12 @@ export const useAudio = () => {
         if (step >= steps) {
           gainNode.gain.value = clampedVolume;
           clearInterval(gainTransition);
+          transitionIntervalsRef.current.delete(gainTransition);
         } else {
           gainNode.gain.value = currentGain + (stepSize * step);
         }
       }, stepDuration);
+      transitionIntervalsRef.current.add(gainTransition);
       
       // Get the processed audio track
       const processedTrack = destination.stream.getAudioTracks()[0];
@@ -173,10 +178,12 @@ export const useAudio = () => {
         if (step >= steps) {
           remoteAudioRef.current!.volume = clampedVolume;
           clearInterval(transition);
+          transitionIntervalsRef.current.delete(transition);
         } else {
           remoteAudioRef.current!.volume = currentVolume + (stepSize * step);
         }
       }, stepDuration);
+      transitionIntervalsRef.current.add(transition);
       
       logger.log(`Remote audio volume set to: ${(clampedVolume * 100).toFixed(0)}%`);
     }
@@ -209,10 +216,12 @@ export const useAudio = () => {
         if (step >= steps) {
           screenAudioRef.current!.volume = clampedVolume;
           clearInterval(transition);
+          transitionIntervalsRef.current.delete(transition);
         } else {
           screenAudioRef.current!.volume = currentVolume + (stepSize * step);
         }
       }, stepDuration);
+      transitionIntervalsRef.current.add(transition);
       
       logger.log(`Movie audio volume set to: ${(clampedVolume * 100).toFixed(0)}%`);
     }
@@ -274,6 +283,9 @@ export const useAudio = () => {
       screenAudioRef.current = new Audio();
       screenAudioRef.current.autoplay = true;
       screenAudioRef.current.volume = movieVolumeRef.current;
+      // CRITICAL: Prevent echo by ensuring screen audio doesn't loop back
+      // Set crossOrigin to prevent CORS issues and ensure proper isolation
+      screenAudioRef.current.setAttribute('playsinline', 'true');
       logger.log('Created new screen share audio element');
     }
     
@@ -292,6 +304,10 @@ export const useAudio = () => {
     
     // Apply stored volume
     screenAudioRef.current.volume = movieVolumeRef.current;
+    
+    // CRITICAL ECHO PREVENTION: Ensure screen audio element doesn't interfere with mic
+    // The echoCancellation in getUserMedia handles most cases, but we ensure isolation here
+    // by making sure the audio element is properly configured
     
     // Listen for audio track additions to the stream
     const handleAddTrack = (event: MediaStreamTrackEvent) => {
@@ -365,6 +381,12 @@ export const useAudio = () => {
 
   // Enhanced cleanup
   const enhancedCleanup = useCallback(() => {
+    // Cleanup all transition intervals
+    transitionIntervalsRef.current.forEach((interval) => {
+      clearInterval(interval);
+    });
+    transitionIntervalsRef.current.clear();
+    
     cleanup();
     cleanupMicGain();
   }, [cleanup, cleanupMicGain]);

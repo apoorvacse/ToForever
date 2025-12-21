@@ -26,6 +26,7 @@ interface ControlBarProps {
   isScreenSharing: boolean;
   isRemoteAudioMuted: boolean;
   isHost?: boolean; // BUG FIX: Add isHost prop to control screen share button
+  isScreenShareLoading?: boolean; // Loading state for screen share
   onToggleCamera: () => void;
   onToggleMic: () => void;
   onToggleScreenShare: () => void;
@@ -42,6 +43,7 @@ export const ControlBar = ({
   isScreenSharing,
   isRemoteAudioMuted,
   isHost = false,
+  isScreenShareLoading = false,
   onToggleCamera,
   onToggleMic,
   onToggleScreenShare,
@@ -98,14 +100,17 @@ export const ControlBar = ({
         variant={isScreenSharing ? 'default' : 'secondary'}
         size="lg"
         onClick={onToggleScreenShare}
-        disabled={!isHost && !isScreenSharing} // BUG FIX: Disable if not host (unless already sharing)
+        disabled={(!isHost && !isScreenSharing) || isScreenShareLoading} // Disable if not host, already sharing, or loading
         className={cn(
           'px-5 h-12 rounded-full gap-2',
           isScreenSharing && 'glow-primary animate-pulse-glow',
-          !isHost && !isScreenSharing && 'opacity-50 cursor-not-allowed'
+          (!isHost && !isScreenSharing) && 'opacity-50 cursor-not-allowed',
+          isScreenShareLoading && 'opacity-75 cursor-wait'
         )}
         title={
-          !isHost && !isScreenSharing
+          isScreenShareLoading
+            ? 'Processing...'
+            : !isHost && !isScreenSharing
             ? 'Only host can share screen'
             : isScreenSharing
             ? 'Stop sharing'

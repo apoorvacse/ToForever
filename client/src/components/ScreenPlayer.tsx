@@ -33,7 +33,8 @@ export const ScreenPlayer = ({ stream, hostName, className }: ScreenPlayerProps)
         
         // Ensure video plays
         videoElement.play().catch((error) => {
-          console.warn('Screen share video autoplay prevented:', error);
+          // Ignore autoplay errors - they're expected in some browsers
+          // Video will play when user interacts with the page
         });
       } else {
         // Stream exists but no active video track

@@ -65,13 +65,25 @@ export const useMedia = () => {
    * - Video element stays attached, just track state changes
    */
   const toggleCamera = useCallback(() => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        updateLocalMedia({ isCameraOn: videoTrack.enabled });
-        logger.log(`Camera ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
-      }
+    if (!localStreamRef.current) {
+      logger.warn('Cannot toggle camera: no local stream');
+      return;
+    }
+    
+    const videoTrack = localStreamRef.current.getVideoTracks()[0];
+    if (!videoTrack) {
+      logger.warn('Cannot toggle camera: no video track found');
+      return;
+    }
+    
+    try {
+      const newState = !videoTrack.enabled;
+      videoTrack.enabled = newState;
+      updateLocalMedia({ isCameraOn: newState });
+      logger.log(`Camera ${newState ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      logger.error('Failed to toggle camera:', error);
+      throw error;
     }
   }, [updateLocalMedia]);
 
@@ -81,24 +93,46 @@ export const useMedia = () => {
    * IMPROVEMENT: Added proper state tracking and logging
    */
   const toggleMicrophone = useCallback(() => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        const wasEnabled = audioTrack.enabled;
-        audioTrack.enabled = !audioTrack.enabled;
-        updateLocalMedia({ isMicOn: audioTrack.enabled });
-        logger.log(`Microphone ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
-        
-        // Verify track state after toggle
-        if (audioTrack.enabled && audioTrack.readyState !== 'live') {
-          logger.warn('Audio track enabled but not in live state');
-        }
+    if (!localStreamRef.current) {
+      logger.warn('Cannot toggle microphone: no local stream');
+      return;
+    }
+    
+    const audioTrack = localStreamRef.current.getAudioTracks()[0];
+    if (!audioTrack) {
+      logger.warn('Cannot toggle microphone: no audio track found');
+      return;
+    }
+    
+    try {
+      const wasEnabled = audioTrack.enabled;
+      const newState = !wasEnabled;
+      audioTrack.enabled = newState;
+      updateLocalMedia({ isMicOn: newState });
+      logger.log(`Microphone ${newState ? 'enabled' : 'disabled'}`);
+      
+      // Verify track state after toggle
+      if (newState && audioTrack.readyState !== 'live') {
+        logger.warn('Audio track enabled but not in live state:', {
+          readyState: audioTrack.readyState,
+          enabled: audioTrack.enabled,
+        });
       }
+    } catch (error) {
+      logger.error('Failed to toggle microphone:', error);
+      throw error;
     }
   }, [updateLocalMedia]);
 
   const stopScreenShare = useCallback(() => {
     if (screenStreamRef.current) {
+      // Remove event listeners before stopping tracks
+      const handler = (screenStreamRef.current as any).__addTrackHandler;
+      if (handler) {
+        screenStreamRef.current.removeEventListener('addtrack', handler);
+        delete (screenStreamRef.current as any).__addTrackHandler;
+      }
+      
       screenStreamRef.current.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
       setScreenShareStream(null);
@@ -183,14 +217,19 @@ export const useMedia = () => {
       checkForAudioTracks();
       
       // Some browsers fire 'addtrack' event when tracks are added
-      stream.addEventListener('addtrack', (event) => {
+      const handleAddTrack = (event: MediaStreamTrackEvent) => {
         if (event.track.kind === 'audio') {
           logger.log('🔊 Audio track added to screen share stream', {
             trackLabel: event.track.label,
           });
           checkForAudioTracks();
         }
-      });
+      };
+      
+      stream.addEventListener('addtrack', handleAddTrack);
+      
+      // Store handler for cleanup
+      (stream as any).__addTrackHandler = handleAddTrack;
       
       return stream;
     } catch (error) {

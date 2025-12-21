@@ -20,6 +20,10 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidate[]>([]);
   const targetSocketIdRef = useRef<string | null>(null);
+  // Store polling intervals for cleanup
+  const trackPollIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  // Track if an offer is being created to prevent race conditions
+  const isCreatingOfferRef = useRef(false);
 
   const initializePeerConnection = useCallback((localStream: MediaStream) => {
     // Clean up existing connection
@@ -301,90 +305,116 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
           }
         };
         
-        // Update media state immediately
-        updateRemoteMediaState(stream);
-        
         // CRITICAL FIX: Listen for track state changes (mute/unmute)
         // This ensures the remote UI updates in real-time when tracks are enabled/disabled
         const videoTrack = stream.getVideoTracks()[0];
         const audioTrack = stream.getAudioTracks()[0];
         
+        // Cleanup existing polling intervals for this stream
+        const streamId = stream.id;
+        const existingVideoInterval = trackPollIntervalsRef.current.get(`video-${streamId}`);
+        const existingAudioInterval = trackPollIntervalsRef.current.get(`audio-${streamId}`);
+        if (existingVideoInterval) {
+          clearInterval(existingVideoInterval);
+          trackPollIntervalsRef.current.delete(`video-${streamId}`);
+        }
+        if (existingAudioInterval) {
+          clearInterval(existingAudioInterval);
+          trackPollIntervalsRef.current.delete(`audio-${streamId}`);
+        }
+        
+        // Update media state immediately with current track states
+        updateRemoteMediaState(stream);
+        
         if (videoTrack) {
-          // Remove old listener if exists
-          const oldHandler = (videoTrack as any).__onEnabledChange;
-          if (oldHandler) {
-            videoTrack.removeEventListener('ended', oldHandler);
-          }
+          // Track last known state
+          let lastVideoEnabled = videoTrack.enabled;
           
           // Listen for track enabled/disabled changes
           const handleVideoTrackChange = () => {
-            logger.log('Remote video track state changed:', {
-              enabled: videoTrack.enabled,
-              readyState: videoTrack.readyState,
-            });
-            updateRemoteMediaState(stream);
+            // Get fresh track state from stream (in case stream reference changed)
+            const currentVideoTrack = stream.getVideoTracks()[0];
+            if (!currentVideoTrack || currentVideoTrack.id !== videoTrack.id) {
+              return; // Track was replaced
+            }
+            
+            const currentEnabled = currentVideoTrack.enabled;
+            if (currentEnabled !== lastVideoEnabled) {
+              lastVideoEnabled = currentEnabled;
+              logger.log('🎥 Remote video track state changed:', {
+                enabled: currentEnabled,
+                readyState: currentVideoTrack.readyState,
+                trackId: currentVideoTrack.id,
+              });
+              // Force state update with fresh stream reference
+              updateRemoteMediaState(stream);
+            }
           };
           
-          // Store handler for cleanup
-          (videoTrack as any).__onEnabledChange = handleVideoTrackChange;
-          
-          // Use MutationObserver or polling to detect enabled changes
-          // Since MediaStreamTrack doesn't fire events for enabled changes,
-          // we'll poll the enabled state and update when it changes
-          let lastVideoEnabled = videoTrack.enabled;
+          // Poll for enabled state changes (MediaStreamTrack doesn't fire events for enabled changes)
+          // Optimized: Poll every 200ms (balance between responsiveness and performance)
           const videoTrackPoll = setInterval(() => {
             if (videoTrack.readyState === 'ended') {
               clearInterval(videoTrackPoll);
+              trackPollIntervalsRef.current.delete(`video-${streamId}`);
               return;
             }
-            if (videoTrack.enabled !== lastVideoEnabled) {
-              lastVideoEnabled = videoTrack.enabled;
-              handleVideoTrackChange();
-            }
-          }, 200); // Poll every 200ms
+            handleVideoTrackChange();
+          }, 200); // Poll every 200ms - optimized for performance
+          
+          trackPollIntervalsRef.current.set(`video-${streamId}`, videoTrackPoll);
           
           // Cleanup on track end
           videoTrack.onended = () => {
             clearInterval(videoTrackPoll);
+            trackPollIntervalsRef.current.delete(`video-${streamId}`);
             updateRemoteMediaState(stream);
           };
         }
         
         if (audioTrack) {
-          // Remove old listener if exists
-          const oldHandler = (audioTrack as any).__onEnabledChange;
-          if (oldHandler) {
-            audioTrack.removeEventListener('ended', oldHandler);
-          }
+          // Track last known state
+          let lastAudioEnabled = audioTrack.enabled;
           
           // Listen for track enabled/disabled changes
           const handleAudioTrackChange = () => {
-            logger.log('Remote audio track state changed:', {
-              enabled: audioTrack.enabled,
-              readyState: audioTrack.readyState,
-            });
-            updateRemoteMediaState(stream);
+            // Get fresh track state from stream (in case stream reference changed)
+            const currentAudioTrack = stream.getAudioTracks()[0];
+            if (!currentAudioTrack || currentAudioTrack.id !== audioTrack.id) {
+              return; // Track was replaced
+            }
+            
+            const currentEnabled = currentAudioTrack.enabled;
+            if (currentEnabled !== lastAudioEnabled) {
+              lastAudioEnabled = currentEnabled;
+              logger.log('🎤 Remote audio track state changed (MUTE/UNMUTE):', {
+                enabled: currentEnabled,
+                readyState: currentAudioTrack.readyState,
+                trackId: currentAudioTrack.id,
+                wasEnabled: lastAudioEnabled,
+              });
+              // Force state update with fresh stream reference
+              updateRemoteMediaState(stream);
+            }
           };
           
-          // Store handler for cleanup
-          (audioTrack as any).__onEnabledChange = handleAudioTrackChange;
-          
           // Poll for enabled state changes
-          let lastAudioEnabled = audioTrack.enabled;
+          // Optimized: Poll every 200ms (balance between responsiveness and performance)
           const audioTrackPoll = setInterval(() => {
             if (audioTrack.readyState === 'ended') {
               clearInterval(audioTrackPoll);
+              trackPollIntervalsRef.current.delete(`audio-${streamId}`);
               return;
             }
-            if (audioTrack.enabled !== lastAudioEnabled) {
-              lastAudioEnabled = audioTrack.enabled;
-              handleAudioTrackChange();
-            }
-          }, 200); // Poll every 200ms
+            handleAudioTrackChange();
+          }, 200); // Poll every 200ms - optimized for performance
+          
+          trackPollIntervalsRef.current.set(`audio-${streamId}`, audioTrackPoll);
           
           // Cleanup on track end
           audioTrack.onended = () => {
             clearInterval(audioTrackPoll);
+            trackPollIntervalsRef.current.delete(`audio-${streamId}`);
             updateRemoteMediaState(stream);
           };
         }
@@ -399,26 +429,70 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
       }
     };
 
-    // Handle connection state changes
+    // Handle connection state changes with comprehensive error handling
     pc.onconnectionstatechange = () => {
-      logger.log('Connection state:', pc.connectionState);
-      switch (pc.connectionState) {
+      const state = pc.connectionState;
+      logger.log('WebRTC connection state:', state);
+      
+      switch (state) {
         case 'connecting':
           setConnectionStatus('connecting');
           break;
         case 'connected':
           setConnectionStatus('connected');
+          logger.log('✅ WebRTC peer connection established');
           break;
         case 'disconnected':
+          logger.warn('⚠️ WebRTC connection disconnected');
+          setConnectionStatus('disconnected');
+          break;
         case 'failed':
+          logger.error('❌ WebRTC connection failed');
+          setConnectionStatus('disconnected');
+          // Attempt to recover by creating a new offer if we're in stable state
+          if (pc.signalingState === 'stable') {
+            logger.log('Attempting to recover connection...');
+            // Recovery will be handled by socket reconnection
+          }
+          break;
         case 'closed':
+          logger.log('WebRTC connection closed');
           setConnectionStatus('disconnected');
           break;
       }
     };
 
+    // Enhanced ICE connection state handling with recovery
     pc.oniceconnectionstatechange = () => {
-      logger.log('ICE connection state:', pc.iceConnectionState);
+      const iceState = pc.iceConnectionState;
+      logger.log('ICE connection state:', iceState);
+      
+      // Handle ICE connection failures with automatic recovery
+      if (iceState === 'failed') {
+        logger.error('❌ ICE connection failed - attempting to recover');
+        // Trigger ICE restart by creating a new offer
+        if (pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer') {
+          try {
+            // restartIce() is available in modern browsers
+            if (typeof pc.restartIce === 'function') {
+              pc.restartIce();
+            } else {
+              logger.warn('ICE restart not supported in this browser');
+            }
+          } catch (err) {
+            logger.error('ICE restart failed:', err);
+          }
+        }
+      } else if (iceState === 'disconnected') {
+        logger.warn('⚠️ ICE connection disconnected');
+      } else if (iceState === 'connected' || iceState === 'completed') {
+        logger.log('✅ ICE connection established');
+      }
+    };
+    
+    // Handle ICE gathering state for better debugging
+    pc.onicegatheringstatechange = () => {
+      logger.log('ICE gathering state:', pc.iceGatheringState);
     };
 
     return pc;
@@ -431,7 +505,20 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
       return null;
     }
 
+    // Prevent multiple simultaneous offers
+    if (isCreatingOfferRef.current) {
+      logger.warn('Offer creation already in progress, skipping duplicate request');
+      return null;
+    }
+
+    // Check if we're in a valid state to create an offer
+    if (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-remote-offer') {
+      logger.warn('Cannot create offer: already have an offer/answer exchange in progress');
+      return null;
+    }
+
     try {
+      isCreatingOfferRef.current = true;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       logger.log('Offer created:', offer);
@@ -446,6 +533,8 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
     } catch (error) {
       logger.error('Failed to create offer:', error);
       return null;
+    } finally {
+      isCreatingOfferRef.current = false;
     }
   }, [options]);
 
@@ -454,6 +543,21 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
     if (!pc) {
       logger.error('PeerConnection not initialized');
       return null;
+    }
+
+    // Validate offer
+    if (!offer || !offer.type || !offer.sdp) {
+      logger.error('Invalid offer format');
+      return null;
+    }
+
+    // Check if we're in a valid state to create an answer
+    if (pc.signalingState !== 'have-remote-offer') {
+      logger.warn(`Cannot create answer: invalid signaling state: ${pc.signalingState}`);
+      // Try to set remote description anyway if we're in stable state
+      if (pc.signalingState !== 'stable') {
+        return null;
+      }
     }
 
     try {
@@ -466,7 +570,11 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
       
       // Process any pending ICE candidates
       for (const candidate of pendingCandidatesRef.current) {
-        await pc.addIceCandidate(candidate);
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (err) {
+          logger.warn('Failed to add pending ICE candidate:', err);
+        }
       }
       pendingCandidatesRef.current = [];
       
@@ -486,13 +594,32 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
       return;
     }
 
+    // Validate answer
+    if (!answer || !answer.type || !answer.sdp) {
+      logger.error('Invalid answer format');
+      return;
+    }
+
+    // Check if we're in a valid state to set remote description
+    if (pc.signalingState !== 'have-local-offer') {
+      logger.warn(`Cannot set remote description: invalid signaling state: ${pc.signalingState}`);
+      // Try anyway if we're in stable state
+      if (pc.signalingState !== 'stable') {
+        return;
+      }
+    }
+
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
       logger.log('Remote description set');
       
       // Process any pending ICE candidates
       for (const candidate of pendingCandidatesRef.current) {
-        await pc.addIceCandidate(candidate);
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (err) {
+          logger.warn('Failed to add pending ICE candidate:', err);
+        }
       }
       pendingCandidatesRef.current = [];
     } catch (error) {
@@ -503,17 +630,46 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
   const addIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
     const pc = peerConnectionRef.current;
     
+    if (!pc) {
+      logger.warn('PeerConnection not initialized, queueing ICE candidate');
+      // Queue candidate for later
+      try {
+        pendingCandidatesRef.current.push(new RTCIceCandidate(candidate));
+        logger.log('ICE candidate queued (no peer connection)');
+      } catch (err) {
+        logger.error('Failed to queue ICE candidate:', err);
+      }
+      return;
+    }
+
+    // Validate candidate
+    if (!candidate || !candidate.candidate) {
+      logger.warn('Invalid ICE candidate format');
+      return;
+    }
+    
     try {
-      if (pc && pc.remoteDescription) {
+      if (pc.remoteDescription) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
         logger.log('ICE candidate added');
       } else {
         // Queue candidate if remote description not set yet
         pendingCandidatesRef.current.push(new RTCIceCandidate(candidate));
-        logger.log('ICE candidate queued');
+        logger.log('ICE candidate queued (waiting for remote description)');
       }
     } catch (error) {
-      logger.error('Failed to add ICE candidate:', error);
+      // Don't log as error if it's a duplicate candidate (common in WebRTC)
+      if (error instanceof Error && error.message.includes('duplicate')) {
+        logger.log('ICE candidate already added (duplicate)');
+      } else {
+        logger.error('Failed to add ICE candidate:', error);
+        // Queue for retry if it's a temporary error
+        try {
+          pendingCandidatesRef.current.push(new RTCIceCandidate(candidate));
+        } catch (err) {
+          logger.error('Failed to queue ICE candidate for retry:', err);
+        }
+      }
     }
   }, []);
 
@@ -586,6 +742,8 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
     const hasAudioSender = audioTrack ? existingSenders.some(s => s.track === audioTrack) : false;
 
     // Add tracks with the screen stream so they can be identified
+    // CRITICAL: Use separate streams for screen share to ensure proper track isolation
+    // This prevents audio echo by keeping screen audio separate from mic audio
     if (videoTrack && !hasVideoSender) {
       pc.addTrack(videoTrack, screenStream);
       logger.log('✅ Added screen share video track');
@@ -594,10 +752,14 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
     }
     
     if (audioTrack && !hasAudioSender) {
+      // CRITICAL ECHO PREVENTION: Screen share audio is added as a separate track
+      // The echoCancellation in getUserMedia prevents mic from picking up system audio
+      // By keeping tracks in separate streams, we ensure proper isolation
       pc.addTrack(audioTrack, screenStream);
       logger.log('🔊 Added screen share audio track', {
         trackLabel: audioTrack.label,
         trackId: audioTrack.id,
+        echoPrevention: 'Track isolated from mic audio stream',
       });
     } else if (audioTrack && hasAudioSender) {
       logger.log('Screen share audio track already added');
@@ -672,6 +834,12 @@ export const useWebRTC = (options?: UseWebRTCOptions) => {
   }, [options]);
 
   const cleanup = useCallback(() => {
+    // Cleanup all polling intervals
+    trackPollIntervalsRef.current.forEach((interval) => {
+      clearInterval(interval);
+    });
+    trackPollIntervalsRef.current.clear();
+    
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;

@@ -25,10 +25,24 @@ const Room = () => {
   const [copied, setCopied] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [hasSuggestedPip, setHasSuggestedPip] = useState(false);
+  const [isScreenShareLoading, setIsScreenShareLoading] = useState(false);
   
   // Ref for partner's video element (for PiP)
   const remoteVideoRef = useRef<VideoTileRef>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  
+  // Store timeout refs for cleanup
+  const timeoutRefs = useRef<Set<NodeJS.Timeout>>(new Set());
+  
+  // Helper to create tracked timeouts
+  const createTrackedTimeout = useCallback((callback: () => void, delay: number) => {
+    const timeout = setTimeout(() => {
+      timeoutRefs.current.delete(timeout);
+      callback();
+    }, delay);
+    timeoutRefs.current.add(timeout);
+    return timeout;
+  }, []);
 
   const {
     connectionStatus,
@@ -47,12 +61,39 @@ const Room = () => {
   const {
     permissionError,
     initializeMedia,
-    toggleCamera,
-    toggleMicrophone,
+    toggleCamera: toggleCameraMedia,
+    toggleMicrophone: toggleMicrophoneMedia,
     startScreenShare,
     stopScreenShare,
     cleanup: cleanupMedia,
   } = useMedia();
+  
+  // Wrapped toggle functions with error handling and state sync
+  const toggleCamera = useCallback(() => {
+    try {
+      toggleCameraMedia();
+    } catch (error) {
+      logger.error('Failed to toggle camera:', error);
+      toast({
+        title: 'Camera error',
+        description: 'Failed to toggle camera. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  }, [toggleCameraMedia, toast]);
+  
+  const toggleMicrophone = useCallback(() => {
+    try {
+      toggleMicrophoneMedia();
+    } catch (error) {
+      logger.error('Failed to toggle microphone:', error);
+      toast({
+        title: 'Microphone error',
+        description: 'Failed to toggle microphone. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  }, [toggleMicrophoneMedia, toast]);
 
   // Socket and WebRTC refs for callbacks
   const socketEmitRef = useRef<{
@@ -203,7 +244,7 @@ const Room = () => {
         description: `${data.name} joined the room.`,
       });
       // Wait a bit for peer connection to be ready, then create offer
-      setTimeout(() => {
+      createTrackedTimeout(() => {
         if (webrtcRef.current) {
           webrtcRef.current.createOffer(data.socketId).catch((err) => {
             logger.error('Failed to create offer:', err);
@@ -248,7 +289,7 @@ const Room = () => {
     onCreateOffer: useCallback(async (data) => {
       logger.log('Create offer requested:', data);
       // Wait a bit for peer connection to be ready
-      setTimeout(async () => {
+      createTrackedTimeout(async () => {
         if (webrtcRef.current) {
           await webrtcRef.current.createOffer(data.targetSocketId);
         }
@@ -356,11 +397,22 @@ const Room = () => {
   // Separate cleanup effect that only runs on unmount
   useEffect(() => {
     return () => {
+      // Cleanup all timeouts
+      timeoutRefs.current.forEach((timeout) => {
+        clearTimeout(timeout);
+      });
+      timeoutRefs.current.clear();
       resetRoom();
     };
   }, []); // Empty deps - only runs on unmount
 
   const handleToggleScreenShare = useCallback(async () => {
+    // Prevent double-clicks and concurrent operations
+    if (isScreenShareLoading) {
+      logger.warn('Screen share operation already in progress');
+      return;
+    }
+
     // BUG FIX: Only host can share screen
     // Check if current user is the host before allowing screen share
     if (localUser?.id !== hostId) {
@@ -372,36 +424,49 @@ const Room = () => {
       return;
     }
 
-    if (localUser?.mediaState.isScreenSharing) {
-      // Remove screen share tracks from peer connection
-      if (screenShareStream && webrtcRef.current) {
-        await webrtcRef.current.removeScreenShareTrack(screenShareStream);
-      }
-      stopScreenShare();
-      socket.emitHostChanged();
-      toast({
-        title: 'Screen sharing stopped',
-        description: 'You are no longer sharing your screen.',
-      });
-    } else {
-      const stream = await startScreenShare();
-      if (stream) {
-        // Add screen share tracks to peer connection
-        // This will create a new offer and send it via socket
-        if (webrtcRef.current) {
-          await webrtcRef.current.addScreenShareTrack(stream);
+    setIsScreenShareLoading(true);
+
+    try {
+      if (localUser?.mediaState.isScreenSharing) {
+        // Remove screen share tracks from peer connection
+        if (screenShareStream && webrtcRef.current) {
+          await webrtcRef.current.removeScreenShareTrack(screenShareStream);
         }
+        stopScreenShare();
         socket.emitHostChanged();
         toast({
-          title: 'Screen sharing started',
-          description: 'Others can now see your screen.',
+          title: 'Screen sharing stopped',
+          description: 'You are no longer sharing your screen.',
         });
       } else {
-        // User cancelled screen share
-        logger.log('Screen share cancelled by user');
+        const stream = await startScreenShare();
+        if (stream) {
+          // Add screen share tracks to peer connection
+          // This will create a new offer and send it via socket
+          if (webrtcRef.current) {
+            await webrtcRef.current.addScreenShareTrack(stream);
+          }
+          socket.emitHostChanged();
+          toast({
+            title: 'Screen sharing started',
+            description: 'Others can now see your screen.',
+          });
+        } else {
+          // User cancelled screen share
+          logger.log('Screen share cancelled by user');
+        }
       }
+    } catch (error) {
+      logger.error('Failed to toggle screen share:', error);
+      toast({
+        title: 'Screen share error',
+        description: error instanceof Error ? error.message : 'Failed to toggle screen sharing.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsScreenShareLoading(false);
     }
-  }, [localUser?.mediaState.isScreenSharing, localUser?.id, hostId, screenShareStream, startScreenShare, stopScreenShare, socket, toast]);
+  }, [localUser?.mediaState.isScreenSharing, localUser?.id, hostId, screenShareStream, startScreenShare, stopScreenShare, socket, toast, isScreenShareLoading]);
 
   const handleLeaveRoom = useCallback(() => {
     cleanupMedia();
@@ -416,16 +481,25 @@ const Room = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanupMedia, cleanupWebRTC, cleanupAudio, navigate, toast]); // resetRoom is stable, no need in deps
 
-  const copyRoomLink = () => {
-    const link = window.location.href;
-    navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    toast({
-      title: 'Link copied!',
-      description: 'Share this link to invite someone.',
-    });
-  };
+  const copyRoomLink = useCallback(async () => {
+    try {
+      const link = window.location.href;
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      createTrackedTimeout(() => setCopied(false), 2000);
+      toast({
+        title: 'Link copied!',
+        description: 'Share this link to invite someone.',
+      });
+    } catch (error) {
+      logger.error('Failed to copy link:', error);
+      toast({
+        title: 'Failed to copy link',
+        description: 'Please copy the URL manually from the address bar.',
+        variant: 'destructive',
+      });
+    }
+  }, [toast, createTrackedTimeout]);
 
   // Get host name for display
   const getHostName = () => {
@@ -549,6 +623,7 @@ const Room = () => {
           isScreenSharing={localUser?.mediaState.isScreenSharing || false}
           isRemoteAudioMuted={isRemoteAudioMuted}
           isHost={localUser?.id === hostId}
+          isScreenShareLoading={isScreenShareLoading}
           onToggleCamera={toggleCamera}
           onToggleMic={toggleMicrophone}
           onToggleScreenShare={handleToggleScreenShare}

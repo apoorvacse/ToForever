@@ -23,6 +23,7 @@ export const useSocket = (options: UseSocketOptions) => {
   const socketRef = useRef<Socket | null>(null);
   const { setConnectionStatus, setHostId, setRemoteUser } = useRoomStore();
   const optionsRef = useRef(options);
+  const timeoutRefs = useRef<Set<NodeJS.Timeout>>(new Set());
 
   // Keep options ref updated
   useEffect(() => {
@@ -66,14 +67,52 @@ export const useSocket = (options: UseSocketOptions) => {
       });
     });
 
-    socket.on('disconnect', () => {
-      logger.log('[Socket] Disconnected');
+    socket.on('disconnect', (reason) => {
+      logger.log('[Socket] Disconnected:', reason);
       setConnectionStatus('disconnected');
+      
+      // Handle different disconnect reasons
+      if (reason === 'io server disconnect') {
+        // Server initiated disconnect - might be intentional
+        logger.warn('[Socket] Server disconnected the client');
+      } else if (reason === 'io client disconnect') {
+        // Client initiated disconnect - normal
+        logger.log('[Socket] Client disconnected');
+      } else {
+        // Network issues or transport errors
+        logger.warn('[Socket] Unexpected disconnect:', reason);
+      }
     });
 
     socket.on('connect_error', (error) => {
       logger.error('[Socket] Connection error:', error);
       setConnectionStatus('disconnected');
+      
+      // Provide user feedback for connection errors
+      if (optionsRef.current.onError) {
+        optionsRef.current.onError({
+          message: `Connection failed: ${error.message || 'Unable to connect to server'}`,
+        });
+      }
+    });
+    
+    socket.on('reconnect', (attemptNumber) => {
+      logger.log('[Socket] Reconnected after', attemptNumber, 'attempts');
+      setConnectionStatus('connecting');
+    });
+    
+    socket.on('reconnect_error', (error) => {
+      logger.error('[Socket] Reconnection error:', error);
+    });
+    
+    socket.on('reconnect_failed', () => {
+      logger.error('[Socket] Reconnection failed after all attempts');
+      setConnectionStatus('disconnected');
+      if (optionsRef.current.onError) {
+        optionsRef.current.onError({
+          message: 'Connection lost. Please refresh the page.',
+        });
+      }
     });
 
     // Room events
@@ -86,12 +125,14 @@ export const useSocket = (options: UseSocketOptions) => {
       // If there are other users already in the room, we should create an offer
       if (data.otherUsers && data.otherUsers.length > 0) {
         // The server will send create-offer event, but we can also trigger it here
-        setTimeout(() => {
+        const timeout = setTimeout(() => {
+          timeoutRefs.current.delete(timeout);
           optionsRef.current.onCreateOffer?.({
             targetSocketId: '', // Will be set by server
             targetUserId: data.otherUsers[0].userId,
           });
         }, 1000);
+        timeoutRefs.current.add(timeout);
       }
     });
 
@@ -145,6 +186,12 @@ export const useSocket = (options: UseSocketOptions) => {
 
     // Cleanup on unmount or when roomId/userId changes
     return () => {
+      // Cleanup all timeouts
+      timeoutRefs.current.forEach((timeout) => {
+        clearTimeout(timeout);
+      });
+      timeoutRefs.current.clear();
+      
       if (socket && socket.connected) {
         try {
           socket.emit('leave-room');
