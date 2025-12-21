@@ -27,8 +27,6 @@ export const useMedia = () => {
           autoGainControl: true, // Normalizes volume
           sampleRate: { ideal: 48000 }, // High quality audio
           channelCount: { ideal: 1 }, // Mono for voice (reduces bandwidth)
-          // Suppress echo from system audio
-          suppressLocalAudioPlayback: true, // Chrome-specific: prevents echo
         },
       });
       
@@ -117,17 +115,15 @@ export const useMedia = () => {
       // - Enable audio with echo cancellation to prevent feedback
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          displaySurface: 'any', // Allow screen, window, or tab
+          displaySurface: 'any' as const, // Allow screen, window, or tab
           width: { ideal: 1920, max: 1920 }, // Full HD max
           height: { ideal: 1080, max: 1080 },
           frameRate: { ideal: 30, max: 30 }, // 30fps for smooth playback
-          cursor: 'always', // Always show cursor
         },
         audio: {
           echoCancellation: true, // CRITICAL: Prevents echo from system audio
           noiseSuppression: true,
           autoGainControl: true,
-          suppressLocalAudioPlayback: true, // Chrome-specific: prevents echo
           sampleRate: { ideal: 48000 },
         },
       });
